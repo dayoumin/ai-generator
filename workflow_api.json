@@ -23,8 +23,8 @@
     "inputs": {
       "text": "cute kawaii flat illustration, bright pastel colors, soft rounded shapes, {prompt}",
       "clip": [
-        "3",
-        1
+        "10",
+        0
       ]
     },
     "class_type": "CLIPTextEncode",
@@ -36,8 +36,8 @@
     "inputs": {
       "text": "text, watermark, ugly, blurry, nsfw, dark, scary, realistic photo",
       "clip": [
-        "3",
-        1
+        "10",
+        0
       ]
     },
     "class_type": "CLIPTextEncode",
@@ -52,8 +52,8 @@
         0
       ],
       "vae": [
-        "3",
-        2
+        "11",
+        0
       ]
     },
     "class_type": "VAEDecode",
@@ -72,6 +72,25 @@
     "class_type": "SaveImage",
     "_meta": {
       "title": "Save Image"
+    }
+  },
+  "10": {
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "flux"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "11": {
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
     }
   },
   "13": {
