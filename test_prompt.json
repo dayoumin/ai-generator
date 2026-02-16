@@ -1,0 +1,13 @@
+{
+    "prompts": [
+        {
+            "prompt": "an adorable sitting cat",
+            "desc_ko": "호기심 가득한 귀여운 고양이"
+        }
+    ],
+    "types": [
+        "thumb"
+    ],
+    "batch_count": 1,
+    "steps": 10
+}

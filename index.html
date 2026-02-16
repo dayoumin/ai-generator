@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kemi AI Studio | Batch Generator</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.344.0/dist/umd/lucide.min.js"></script>
+</head>
+
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon"><i data-lucide="sparkles"></i></div>
+                    <h1>Kemi <span>Studio</span></h1>
+                </div>
+            </div>
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-tab="dashboard">
+                    <i data-lucide="layout-dashboard"></i> Dashboard
+                </a>
+                <a href="#" class="nav-item" data-tab="prompts">
+                    <i data-lucide="file-text"></i> Prompt List
+                </a>
+                <a href="#" class="nav-item" data-tab="outputs">
+                    <i data-lucide="image"></i> Gallery
+                </a>
+                <a href="#" class="nav-item" data-tab="settings">
+                    <i data-lucide="settings"></i> Settings
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="dot pulse green"></span>
+                    <span>ComfyUI Live</span>
+                </div>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <header class="top-bar">
+                <div class="breadcrumb">Project: AI_Generator / <span>Kemi Batch</span></div>
+                <div class="actions">
+                    <button class="btn btn-secondary" id="r2-upload-btn">
+                        <i data-lucide="cloud-upload"></i> Upload to R2
+                    </button>
+                    <button class="btn btn-primary" id="start-batch-btn" onclick="openConfirmModal()">
+                        <i data-lucide="play"></i> Start Batch
+                    </button>
+                </div>
+            </header>
+
+            <div class="content-area">
+                <!-- Dashboard Tab -->
+                <section id="dashboard-tab" class="tab-content active">
+                    <div class="hero-stats">
+                        <div class="stat-card">
+                            <label>Total Tasks</label>
+                            <span id="total-count">0 / 108</span>
+                        </div>
+                        <div class="stat-card">
+                            <label>Progress</label>
+                            <div class="progress-info">
+                                <span id="progress-percent">0%</span>
+                                <div class="progress-bar-container">
+                                    <div class="progress-bar" id="main-progress-bar"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <label>Current Status</label>
+                            <span id="current-status" class="status-text">Idle</span>
+                        </div>
+                    </div>
+
+                    <div class="grid-layout">
+                        <div class="log-panel">
+                            <div class="panel-header">
+                                <h3>Execution Logs</h3>
+                                <button class="btn-icon" onclick="clearLogs()"><i data-lucide="trash-2"></i></button>
+                            </div>
+                            <div class="log-container" id="log-container">
+                                <div class="log-entry system">System initialized. Waiting for task...</div>
+                            </div>
+                        </div>
+                        <div class="live-preview">
+                            <div class="panel-header">
+                                <h3>Live Preview</h3>
+                            </div>
+                            <div class="preview-display" id="live-preview-display">
+                                <div class="preview-placeholder">
+                                    <i data-lucide="camera"></i>
+                                    <p>Images will appear here in real-time</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Prompts Tab -->
+                <section id="prompts-tab" class="tab-content">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h3>Prompt Library</h3>
+                            <div class="selection-info">
+                                <span id="selection-count">0 Selected</span>
+                            </div>
+                        </div>
+
+                        <div class="prompt-controls">
+                            <div class="control-group">
+                                <i data-lucide="file-spreadsheet"></i>
+                                <select id="prompt-file-selector" class="file-selector">
+                                    <option>Loading...</option>
+                                </select>
+                                <button class="btn btn-icon" onclick="openHelpModal()" title="CSV Guide">
+                                    <i data-lucide="help-circle"></i>
+                                </button>
+                            </div>
+                            <div class="action-group">
+                                <button class="btn btn-danger" onclick="clearPromptList()" title="Clear current list">
+                                    <i data-lucide="trash"></i> Clear
+                                </button>
+                                <button class="btn btn-secondary" onclick="toggleCustomPromptForm()">
+                                    <i data-lucide="plus"></i> Add Custom
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Custom Prompt Form -->
+                        <div id="custom-prompt-form" class="custom-form" style="display:none;">
+                            <div class="form-row">
+                                <input type="text" id="custom-desc" placeholder="설명 (예: 푸른 용)" class="flex-2">
+                                <select id="custom-ar" class="flex-1">
+                                    <option value="16:9">16:9 (Wide)</option>
+                                    <option value="9:16">9:16 (Tall)</option>
+                                    <option value="1:1">1:1 (Square)</option>
+                                    <option value="4:3">4:3 (Photo)</option>
+                                    <option value="3:2">3:2 (DSLR)</option>
+                                    <option value="21:9">21:9 (Cinema)</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <input type="text" id="custom-prompt" placeholder="프롬프트 (예: a blue dragon flying...)"
+                                    class="flex-3">
+                                <button class="btn btn-primary" onclick="addCustomPrompt()">Add</button>
+                            </div>
+                        </div>
+
+                        <!-- Style Configuration -->
+                        <div class="style-config" id="style-config-panel">
+                            <div class="config-header">
+                                <span>Style Configuration</span>
+                                <div class="config-actions">
+                                    <select id="default-ar" class="preset-selector" title="Default Aspect Ratio"
+                                        data-tooltip="Default Aspect Ratio for all prompts">
+                                        <option value="16:9">16:9 (Wide)</option>
+                                        <option value="9:16">9:16 (Tall)</option>
+                                        <option value="1:1">1:1 (Square)</option>
+                                        <option value="4:3">4:3 (Photo)</option>
+                                        <option value="3:4">3:4 (Portrait)</option>
+                                        <option value="21:9">21:9 (Cinema)</option>
+                                        <option value="3:2">3:2 (DSLR)</option>
+                                        <option value="2:3">2:3 (Mobile)</option>
+                                    </select>
+                                    <select id="style-preset" onchange="applyPreset()" class="preset-selector"
+                                        data-tooltip="Apply One-Click Style Presets">
+                                        <option value="custom">Custom Style</option>
+                                        <option value="3d">3D Character</option>
+                                        <option value="photo">Photorealistic</option>
+                                        <option value="anime">Anime</option>
+                                        <option value="icon">Icon</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="config-row">
+                                <div class="config-group">
+                                    <label><i data-lucide="palette"></i> Global Style Prompt</label>
+                                    <textarea id="style-prompt"
+                                        rows="2">cute kawaii flat illustration, bright pastel colors, soft rounded shapes</textarea>
+                                </div>
+                                <div class="config-group">
+                                    <label><i data-lucide="ban"></i> Negative Prompt</label>
+                                    <textarea id="negative-prompt"
+                                        rows="2">text, watermark, ugly, blurry, nsfw, dark, scary, realistic photo</textarea>
+                                </div>
+                            </div>
+                            <div class="config-row"
+                                style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 16px;">
+                                <div class="config-group">
+                                    <label data-tooltip="Generate multiple versions of the same prompt"><i
+                                            data-lucide="repeat"></i> Repeat per Prompt (Variations)</label>
+                                    <input type="number" id="batch-count" value="1" min="1" max="10"
+                                        style="padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); color: var(--text-main); border-radius: 8px;">
+                                </div>
+                                <div class="config-group">
+                                    <label data-tooltip="Higher = More Detail (Slower); Lower = Draft (Faster)"><i
+                                            data-lucide="layers"></i> Quality Steps: <span id="steps-val"
+                                            style="color:var(--primary)">20</span></label>
+                                    <input type="range" id="steps" min="4" max="50" value="20"
+                                        style="width:100%; margin-top:8px;"
+                                        oninput="document.getElementById('steps-val').innerText=this.value">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="table-container">
+                            <table id="prompt-table">
+                                <thead>
+                                    <tr>
+                                        <th class="checkbox-cell">
+                                            <input type="checkbox" onchange="toggleAllPrompts(this)" checked>
+                                        </th>
+                                        <th>Target</th>
+                                        <th>Description (KO)</th>
+                                        <th>Prompt (EN)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Dynamic content -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Outputs Tab -->
+                <section id="outputs-tab" class="tab-content" data-tooltip="View generated results">
+                    <div class="gallery-filters">
+                        <button class="filter-btn active" onclick="filterGallery('all')">All</button>
+                        <button class="filter-btn" onclick="filterGallery('thumb')">Thumbnails</button>
+                        <button class="filter-btn" onclick="filterGallery('hero')">Hero Images</button>
+                    </div>
+                    <div class="gallery-grid" id="gallery-grid">
+                        <!-- Dynamic content -->
+                    </div>
+                </section>
+
+                <!-- Settings Tab -->
+                <section id="settings-tab" class="tab-content">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h3><i data-lucide="settings"></i> Application Settings</h3>
+                        </div>
+                        <div class="settings-form">
+                            <div class="setting-item">
+                                <div>
+                                    <label>Show Tooltips</label>
+                                    <div class="setting-desc">Display helpful hints when hovering over UI elements.
+                                    </div>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-tooltips" checked onchange="saveAppConfig()">
+                                    <span class="slider round"></span>
+                                </label>
+                            </div>
+                            <div class="setting-item">
+                                <div>
+                                    <label>Default Quality (Steps)</label>
+                                    <div class="setting-desc">Set the default quality level (4-50) for new sessions.
+                                    </div>
+                                </div>
+                                <input type="number" id="setting-steps" value="20" min="4" max="50" class="input-tiny"
+                                    onchange="saveAppConfig()">
+                            </div>
+                            <div class="setting-item">
+                                <div>
+                                    <label>Default Repeat Count</label>
+                                    <div class="setting-desc">Number of variations to generate per prompt by default.
+                                    </div>
+                                </div>
+                                <input type="number" id="setting-repeat" value="1" min="1" max="10" class="input-tiny"
+                                    onchange="saveAppConfig()">
+                            </div>
+                            <div class="setting-item">
+                                <div>
+                                    <label>Default Output Path</label>
+                                    <div class="setting-desc">Local path where generated images are saved.</div>
+                                </div>
+                                <code
+                                    style="font-size: 0.9rem; padding: 4px 8px; background: rgba(0,0,0,0.3); border-radius: 4px;">./output/</code>
+                            </div>
+
+                            <!-- New Settings -->
+                            <div class="setting-item">
+                                <div>
+                                    <label>Default Aspect Ratio</label>
+                                    <div class="setting-desc">Preferred ratio for new sessions.</div>
+                                </div>
+                                <select id="setting-ar" class="input-tiny" style="width: 120px;"
+                                    onchange="saveAppConfig()">
+                                    <option value="16:9">16:9 (Wide)</option>
+                                    <option value="9:16">9:16 (Tall)</option>
+                                    <option value="1:1">1:1 (Square)</option>
+                                    <option value="4:3">4:3 (Photo)</option>
+                                    <option value="21:9">21:9 (Cinema)</option>
+                                </select>
+                            </div>
+                            <div class="setting-item">
+                                <div>
+                                    <label>Auto-Clear Gallery</label>
+                                    <div class="setting-desc">Clear previous images when starting a new batch.</div>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-autoclear" onchange="saveAppConfig()">
+                                    <span class="slider round"></span>
+                                </label>
+                            </div>
+                            <div class="setting-item">
+                                <div>
+                                    <label>Task Complete Sound</label>
+                                    <div class="setting-desc">Play a chime when batch finishes.</div>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="setting-sound" checked onchange="saveAppConfig()">
+                                    <span class="slider round"></span>
+                                </label>
+                            </div>
+
+                            <div style="margin-top: 32px; border-top: 1px solid var(--border); padding-top: 16px;">
+                                <button class="btn btn-primary" onclick="alert('Settings Saved!')">Save All</button>
+                                <button class="btn btn-danger"
+                                    onclick="clearLogs(); document.getElementById('gallery-grid').innerHTML='';">Clear
+                                    All Logs & Gallery</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="batch-floating-actions" id="prompt-actions">
+                    <button class="fab fab-primary" id="fab-generate" onclick="openConfirmModal()">
+                        <i data-lucide="play"></i> Generate Selected
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div id="confirm-modal" class="modal">
+        <div class="modal-content small">
+            <header>
+                <h3>Start Batch Generation?</h3>
+            </header>
+            <p>This will generate <strong>108 images</strong> using RTX 5080.</p>
+            <p class="sub-text">Estimated time: ~10 minutes</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeConfirmModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmStartBatch()">Yes, Start Now</button>
+            </div>
+        </div>
+    </div>
+    <div id="mapping-modal" class="modal">
+        <div class="modal-content">
+            <header>
+                <h3>R2 Upload Complete</h3>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </header>
+            <p>Add these mappings to your <code>config.ts</code>:</p>
+            <textarea id="mapping-json" readonly></textarea>
+            <button class="btn btn-primary" onclick="copyMapping()">Copy to Clipboard</button>
+        </div>
+    </div>
+    </div>
+
+    <div id="help-modal" class="modal">
+        <div class="modal-content medium">
+            <header>
+                <h3>📌 CSV Format Guide</h3>
+                <button class="close-btn" onclick="closeHelpModal()">&times;</button>
+            </header>
+            <div class="help-body">
+                <p>Create a CSV file in <code>kemi/prompts/</code> folder.</p>
+                <div class="table-info">
+                    <strong>Required Columns:</strong>
+                    <ul>
+                        <li><code>desc_ko</code>: Korean description (Target file name)</li>
+                        <li><code>prompt</code>: Main English prompt</li>
+                    </ul>
+                    <strong>Optional Columns:</strong>
+                    <ul>
+                        <li><code>aspect_ratio</code>: '16:9', '9:16', '1:1', '4:3', '21:9', etc.</li>
+                        <li><code>seed</code>: Fixed seed number</li>
+                        <li><code>extra_positive</code>: Additional style tags</li>
+                        <li><code>extra_negative</code>: Specific exclusions</li>
+                    </ul>
+                </div>
+                <div class="table-info">
+                    <strong>Advanced: Wildcards (Randomization)</strong>
+                    <p>Use curly braces <code>{}</code> to pick random options per generation.</p>
+                    <ul>
+                        <li><code>{red|blue|green}</code> : Picks one color randomly.</li>
+                        <li><code>{standing|sitting|flying}</code> : Varies the pose.</li>
+                    </ul>
+                </div>
+                <div class="code-block">
+                    <pre>desc_ko,prompt,aspect_ratio
+Blue Dragon,A majestic blue dragon flying,16:9
+Cute Cat,Cute cat sitting on a rug,1:1</pre>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="downloadTemplate()"><i data-lucide="download"></i> Download
+                    Template CSV</button>
+                <button class="btn btn-primary" onclick="closeHelpModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/constants.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+
+</html>
