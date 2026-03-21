@@ -94,9 +94,24 @@ function initTabs() {
             document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             item.classList.add('active');
-            document.getElementById(`${item.dataset.tab}-tab`).classList.add('active');
+            const tabEl = document.getElementById(`${item.dataset.tab}-tab`);
+            if (tabEl) tabEl.classList.add('active');
+            updateTopBarButtons(item.dataset.tab);
         }
     });
+}
+
+function updateTopBarButtons(tab) {
+    const startBtn = Utils.el(CONFIG.DOM.START_BTN);
+    const uploadBtn = Utils.el('r2-upload-btn');
+    const showStart = (tab === 'dashboard' || tab === 'prompts');
+    if (startBtn) startBtn.style.display = showStart ? '' : 'none';
+    if (uploadBtn && !batch_status_has_images()) uploadBtn.style.display = 'none';
+}
+
+function batch_status_has_images() {
+    const grid = Utils.el(CONFIG.DOM.GALLERY);
+    return grid && grid.querySelectorAll('.gallery-item').length > 0;
 }
 
 // --- ComfyUI Health Check ---
