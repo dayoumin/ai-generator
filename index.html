@@ -33,6 +33,9 @@
                 <a href="#" class="nav-item" data-tab="settings">
                     <i data-lucide="settings"></i> Settings
                 </a>
+                <a href="#" class="nav-item" data-tab="guide">
+                    <i data-lucide="book-open"></i> Guide
+                </a>
             </nav>
             <div class="sidebar-footer">
                 <div class="status-indicator">
@@ -49,7 +52,7 @@
                     <button class="btn btn-secondary" id="r2-upload-btn">
                         <i data-lucide="cloud-upload"></i> Upload to R2
                     </button>
-                    <button class="btn btn-primary" id="start-batch-btn" onclick="openConfirmModal()">
+                    <button class="btn btn-primary" id="start-batch-btn">
                         <i data-lucide="play"></i> Start Batch
                     </button>
                 </div>
@@ -82,7 +85,7 @@
                         <div class="log-panel">
                             <div class="panel-header">
                                 <h3>Execution Logs</h3>
-                                <button class="btn-icon" onclick="clearLogs()"><i data-lucide="trash-2"></i></button>
+                                <button class="btn-icon" id="clear-logs-btn"><i data-lucide="trash-2"></i></button>
                             </div>
                             <div class="log-container" id="log-container">
                                 <div class="log-entry system">System initialized. Waiting for task...</div>
@@ -118,15 +121,15 @@
                                 <select id="prompt-file-selector" class="file-selector">
                                     <option>Loading...</option>
                                 </select>
-                                <button class="btn btn-icon" onclick="openHelpModal()" title="CSV Guide">
+                                <button class="btn btn-icon" id="open-help-btn" title="CSV Guide">
                                     <i data-lucide="help-circle"></i>
                                 </button>
                             </div>
                             <div class="action-group">
-                                <button class="btn btn-danger" onclick="clearPromptList()" title="Clear current list">
+                                <button class="btn btn-danger" id="clear-prompts-btn" title="Clear current list">
                                     <i data-lucide="trash"></i> Clear
                                 </button>
-                                <button class="btn btn-secondary" onclick="toggleCustomPromptForm()">
+                                <button class="btn btn-secondary" id="toggle-custom-form-btn">
                                     <i data-lucide="plus"></i> Add Custom
                                 </button>
                             </div>
@@ -148,7 +151,7 @@
                             <div class="form-row">
                                 <input type="text" id="custom-prompt" placeholder="프롬프트 (예: a blue dragon flying...)"
                                     class="flex-3">
-                                <button class="btn btn-primary" onclick="addCustomPrompt()">Add</button>
+                                <button class="btn btn-primary" id="add-custom-prompt-btn">Add</button>
                             </div>
                         </div>
 
@@ -168,7 +171,7 @@
                                         <option value="3:2">3:2 (DSLR)</option>
                                         <option value="2:3">2:3 (Mobile)</option>
                                     </select>
-                                    <select id="style-preset" onchange="applyPreset()" class="preset-selector"
+                                    <select id="style-preset" class="preset-selector"
                                         data-tooltip="Apply One-Click Style Presets">
                                         <option value="custom">Custom Style</option>
                                         <option value="3d">3D Character</option>
@@ -203,8 +206,7 @@
                                             data-lucide="layers"></i> Quality Steps: <span id="steps-val"
                                             style="color:var(--primary)">20</span></label>
                                     <input type="range" id="steps" min="4" max="50" value="20"
-                                        style="width:100%; margin-top:8px;"
-                                        oninput="document.getElementById('steps-val').innerText=this.value">
+                                        style="width:100%; margin-top:8px;">
                                 </div>
                             </div>
                         </div>
@@ -214,7 +216,7 @@
                                 <thead>
                                     <tr>
                                         <th class="checkbox-cell">
-                                            <input type="checkbox" onchange="toggleAllPrompts(this)" checked>
+                                            <input type="checkbox" id="toggle-all-checkbox" checked>
                                         </th>
                                         <th>Target</th>
                                         <th>Description (KO)</th>
@@ -232,9 +234,10 @@
                 <!-- Outputs Tab -->
                 <section id="outputs-tab" class="tab-content" data-tooltip="View generated results">
                     <div class="gallery-filters">
-                        <button class="filter-btn active" onclick="filterGallery('all')">All</button>
-                        <button class="filter-btn" onclick="filterGallery('thumb')">Thumbnails</button>
-                        <button class="filter-btn" onclick="filterGallery('hero')">Hero Images</button>
+                        <button class="filter-btn active" data-filter="all">All</button>
+                        <button class="filter-btn" data-filter="thumb">Thumbnails</button>
+                        <button class="filter-btn" data-filter="hero">Hero Images</button>
+                        <button class="filter-btn" data-filter="timeout">Failed/Timeout</button>
                     </div>
                     <div class="gallery-grid" id="gallery-grid">
                         <!-- Dynamic content -->
@@ -255,7 +258,7 @@
                                     </div>
                                 </div>
                                 <label class="switch">
-                                    <input type="checkbox" id="setting-tooltips" checked onchange="saveAppConfig()">
+                                    <input type="checkbox" id="setting-tooltips" checked>
                                     <span class="slider round"></span>
                                 </label>
                             </div>
@@ -265,8 +268,7 @@
                                     <div class="setting-desc">Set the default quality level (4-50) for new sessions.
                                     </div>
                                 </div>
-                                <input type="number" id="setting-steps" value="20" min="4" max="50" class="input-tiny"
-                                    onchange="saveAppConfig()">
+                                <input type="number" id="setting-steps" value="20" min="4" max="50" class="input-tiny">
                             </div>
                             <div class="setting-item">
                                 <div>
@@ -274,8 +276,7 @@
                                     <div class="setting-desc">Number of variations to generate per prompt by default.
                                     </div>
                                 </div>
-                                <input type="number" id="setting-repeat" value="1" min="1" max="10" class="input-tiny"
-                                    onchange="saveAppConfig()">
+                                <input type="number" id="setting-repeat" value="1" min="1" max="10" class="input-tiny">
                             </div>
                             <div class="setting-item">
                                 <div>
@@ -292,8 +293,7 @@
                                     <label>Default Aspect Ratio</label>
                                     <div class="setting-desc">Preferred ratio for new sessions.</div>
                                 </div>
-                                <select id="setting-ar" class="input-tiny" style="width: 120px;"
-                                    onchange="saveAppConfig()">
+                                <select id="setting-ar" class="input-tiny" style="width: 120px;">
                                     <option value="16:9">16:9 (Wide)</option>
                                     <option value="9:16">9:16 (Tall)</option>
                                     <option value="1:1">1:1 (Square)</option>
@@ -307,7 +307,7 @@
                                     <div class="setting-desc">Clear previous images when starting a new batch.</div>
                                 </div>
                                 <label class="switch">
-                                    <input type="checkbox" id="setting-autoclear" onchange="saveAppConfig()">
+                                    <input type="checkbox" id="setting-autoclear">
                                     <span class="slider round"></span>
                                 </label>
                             </div>
@@ -317,23 +317,201 @@
                                     <div class="setting-desc">Play a chime when batch finishes.</div>
                                 </div>
                                 <label class="switch">
-                                    <input type="checkbox" id="setting-sound" checked onchange="saveAppConfig()">
+                                    <input type="checkbox" id="setting-sound" checked>
                                     <span class="slider round"></span>
                                 </label>
                             </div>
 
                             <div style="margin-top: 32px; border-top: 1px solid var(--border); padding-top: 16px;">
-                                <button class="btn btn-primary" onclick="alert('Settings Saved!')">Save All</button>
-                                <button class="btn btn-danger"
-                                    onclick="clearLogs(); document.getElementById('gallery-grid').innerHTML='';">Clear
-                                    All Logs & Gallery</button>
+                                <button class="btn btn-primary" id="save-settings-btn">Save All</button>
+                                <button class="btn btn-danger" id="clear-all-data-btn">Clear All Logs & Gallery</button>
                             </div>
                         </div>
                     </div>
                 </section>
 
+                <!-- Guide Tab -->
+                <section id="guide-tab" class="tab-content">
+                    <div class="guide-container">
+                        <div class="guide-section">
+                            <h2>Architecture</h2>
+                            <div class="arch-diagram">
+                                <div class="arch-node browser">
+                                    <div class="arch-icon">🌐</div>
+                                    <div class="arch-label">Browser</div>
+                                    <div class="arch-port">localhost:8000</div>
+                                </div>
+                                <div class="arch-arrow">→</div>
+                                <div class="arch-node studio">
+                                    <div class="arch-icon">🎛️</div>
+                                    <div class="arch-label">AI_Generator</div>
+                                    <div class="arch-port">Port 8000</div>
+                                    <div class="arch-desc">Batch / Review / Upload</div>
+                                </div>
+                                <div class="arch-arrow">→</div>
+                                <div class="arch-node comfyui">
+                                    <div class="arch-icon">🤖</div>
+                                    <div class="arch-label">ComfyUI</div>
+                                    <div class="arch-port">Port 8188</div>
+                                    <div class="arch-desc">AI Image Engine</div>
+                                </div>
+                                <div class="arch-arrow">→</div>
+                                <div class="arch-node gpu">
+                                    <div class="arch-icon">⚡</div>
+                                    <div class="arch-label">GPU</div>
+                                    <div class="arch-port">RTX 5080</div>
+                                    <div class="arch-desc">16GB VRAM</div>
+                                </div>
+                            </div>
+                            <div class="guide-card info">
+                                <strong>왜 서버가 2개인가?</strong>
+                                <p>ComfyUI는 GPU로 이미지를 생성하는 <strong>독립 오픈소스 AI 엔진</strong>입니다. AI_Generator는 ComfyUI의 API를 호출하는 <strong>관리 도구</strong>입니다. 자동차에 비유하면 ComfyUI가 엔진, AI_Generator가 운전석입니다.</p>
+                            </div>
+                        </div>
+
+                        <div class="guide-section">
+                            <h2>Terminal Guide</h2>
+                            <p class="guide-subtitle">2개 터미널을 구분하는 방법</p>
+                            <div class="guide-columns">
+                                <div class="guide-card terminal-card">
+                                    <div class="terminal-header comfyui-header">
+                                        <span class="terminal-dot"></span>
+                                        Terminal 1: ComfyUI (AI Engine)
+                                    </div>
+                                    <div class="terminal-body">
+                                        <code class="terminal-line highlight">"To see the GUI go to: http://0.0.0.0:8188"</code>
+                                        <code class="terminal-line">"got prompt"</code>
+                                        <code class="terminal-line">"100%|████████| 20/20 [00:03]"</code>
+                                        <code class="terminal-line success">"Prompt executed in 9.47 seconds"</code>
+                                        <code class="terminal-line">"loaded completely; 13267 MB"</code>
+                                    </div>
+                                    <div class="terminal-tip">프로그레스 바(████)가 보이면 ComfyUI</div>
+                                </div>
+                                <div class="guide-card terminal-card">
+                                    <div class="terminal-header studio-header">
+                                        <span class="terminal-dot"></span>
+                                        Terminal 2: AI_Generator (This App)
+                                    </div>
+                                    <div class="terminal-body">
+                                        <code class="terminal-line highlight">"Uvicorn running on http://0.0.0.0:8000"</code>
+                                        <code class="terminal-line">"GET /api/health HTTP/1.1" 200 OK</code>
+                                        <code class="terminal-line">"POST /api/batch/start HTTP/1.1" 200 OK</code>
+                                        <code class="terminal-line">"GET /api/batch/status HTTP/1.1" 200 OK</code>
+                                        <code class="terminal-line warn">"Shutting down"</code>
+                                    </div>
+                                    <div class="terminal-tip">/api/ 로그가 보이면 AI_Generator</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="guide-section">
+                            <h2>How to Run</h2>
+                            <div class="guide-steps">
+                                <div class="guide-step">
+                                    <div class="step-number">1</div>
+                                    <div class="step-content">
+                                        <h4>ComfyUI 실행 (터미널 1)</h4>
+                                        <div class="code-block">cd D:\Projects\ComfyUI<br>python main.py --listen --disable-xformers</div>
+                                        <p class="step-check">✅ "To see the GUI go to: http://0.0.0.0:8188" 메시지 확인</p>
+                                    </div>
+                                </div>
+                                <div class="guide-step">
+                                    <div class="step-number">2</div>
+                                    <div class="step-content">
+                                        <h4>AI_Generator 실행 (터미널 2)</h4>
+                                        <div class="code-block">cd D:\Projects\AI_Generator<br>.venv\Scripts\activate<br>python app.py</div>
+                                        <p class="step-check">✅ "Uvicorn running on http://0.0.0.0:8000" 메시지 확인</p>
+                                    </div>
+                                </div>
+                                <div class="guide-step">
+                                    <div class="step-number">3</div>
+                                    <div class="step-content">
+                                        <h4>브라우저 접속</h4>
+                                        <div class="code-block">http://localhost:8000</div>
+                                        <p class="step-check">✅ 좌측 하단 "ComfyUI Live" 초록색 확인</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="guide-card tip">
+                                <strong>또는 한번에:</strong> <code>D:\Projects\AI_Generator\run_studio.bat</code> 실행
+                            </div>
+                        </div>
+
+                        <div class="guide-section">
+                            <h2>Shutdown / Restart</h2>
+                            <table class="guide-table">
+                                <thead>
+                                    <tr><th>상황</th><th>방법</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>AI_Generator 종료</td><td>해당 터미널에서 <code>Ctrl+C</code> 2번 빠르게</td></tr>
+                                    <tr><td>ComfyUI 종료</td><td>터미널 창 X 버튼으로 닫기</td></tr>
+                                    <tr><td>프롬프트가 안 나타남</td><td>터미널 창 닫고 새 터미널 열기</td></tr>
+                                    <tr><td>코드 수정 후 재시작</td><td>AI_Generator만 재시작 (ComfyUI는 그대로)</td></tr>
+                                    <tr><td>브라우저 캐시 문제</td><td><code>Ctrl+Shift+R</code> 강제 새로고침</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="guide-section">
+                            <h2>Troubleshooting</h2>
+                            <div class="guide-columns">
+                                <div class="guide-card error-card">
+                                    <h4>ComfyUI Errors</h4>
+                                    <div class="error-item">
+                                        <code>CUDA error ... invalid argument</code>
+                                        <p>→ <code>--disable-xformers</code> 플래그 추가</p>
+                                    </div>
+                                    <div class="error-item">
+                                        <code>ModuleNotFoundError: triton</code>
+                                        <p>→ 무시 가능 (경고만, 동작 정상)</p>
+                                    </div>
+                                </div>
+                                <div class="guide-card error-card">
+                                    <h4>AI_Generator Errors</h4>
+                                    <div class="error-item">
+                                        <code>Cannot connect to 127.0.0.1:8188</code>
+                                        <p>→ ComfyUI가 안 돌고 있음. 먼저 실행</p>
+                                    </div>
+                                    <div class="error-item">
+                                        <code>Timeout (300s)</code>
+                                        <p>→ 정상. 첫 1장만 느림 (모델 로딩)</p>
+                                    </div>
+                                </div>
+                                <div class="guide-card error-card">
+                                    <h4>Browser Errors</h4>
+                                    <div class="error-item">
+                                        <code>Unsafe attempt to load URL</code>
+                                        <p>→ 새 탭에서 localhost:8000 직접 입력</p>
+                                    </div>
+                                    <div class="error-item">
+                                        <code>ComfyUI Offline (빨간 점)</code>
+                                        <p>→ ComfyUI 터미널 확인 후 재실행</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="guide-section">
+                            <h2>Key Paths</h2>
+                            <table class="guide-table">
+                                <thead>
+                                    <tr><th>항목</th><th>위치</th><th>설명</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>이미지 출력</td><td><code>outputs/kemi/</code></td><td>thumb/ + hero/ 하위</td></tr>
+                                    <tr><td>프롬프트 CSV</td><td><code>kemi/prompts/</code></td><td>웹 UI에서 편집 가능</td></tr>
+                                    <tr><td>워크플로우</td><td><code>workflow_api.json</code></td><td>ComfyUI 노드 구성</td></tr>
+                                    <tr><td>R2 설정</td><td><code>.env</code></td><td>Cloudflare 자격 증명</td></tr>
+                                    <tr><td>ComfyUI 모델</td><td><code>D:\Projects\ComfyUI\models\</code></td><td>UNET, CLIP, VAE</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
                 <div class="batch-floating-actions" id="prompt-actions">
-                    <button class="fab fab-primary" id="fab-generate" onclick="openConfirmModal()">
+                    <button class="fab fab-primary" id="fab-generate">
                         <i data-lucide="play"></i> Generate Selected
                     </button>
                 </div>
@@ -350,8 +528,8 @@
             <p>This will generate <strong>108 images</strong> using RTX 5080.</p>
             <p class="sub-text">Estimated time: ~10 minutes</p>
             <div class="modal-actions">
-                <button class="btn btn-secondary" onclick="closeConfirmModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="confirmStartBatch()">Yes, Start Now</button>
+                <button class="btn btn-secondary" id="cancel-confirm-btn">Cancel</button>
+                <button class="btn btn-primary" id="start-now-btn">Yes, Start Now</button>
             </div>
         </div>
     </div>
@@ -359,20 +537,19 @@
         <div class="modal-content">
             <header>
                 <h3>R2 Upload Complete</h3>
-                <button class="close-btn" onclick="closeModal()">&times;</button>
+                <button class="close-btn" id="close-mapping-btn">&times;</button>
             </header>
             <p>Add these mappings to your <code>config.ts</code>:</p>
             <textarea id="mapping-json" readonly></textarea>
-            <button class="btn btn-primary" onclick="copyMapping()">Copy to Clipboard</button>
+            <button class="btn btn-primary" id="copy-mapping-btn">Copy to Clipboard</button>
         </div>
-    </div>
     </div>
 
     <div id="help-modal" class="modal">
         <div class="modal-content medium">
             <header>
                 <h3>📌 CSV Format Guide</h3>
-                <button class="close-btn" onclick="closeHelpModal()">&times;</button>
+                <button class="close-btn" id="close-help-btn">&times;</button>
             </header>
             <div class="help-body">
                 <p>Create a CSV file in <code>kemi/prompts/</code> folder.</p>
@@ -405,9 +582,43 @@ Cute Cat,Cute cat sitting on a rug,1:1</pre>
                 </div>
             </div>
             <div class="modal-actions">
-                <button class="btn btn-secondary" onclick="downloadTemplate()"><i data-lucide="download"></i> Download
+                <button class="btn btn-secondary" id="download-template-btn"><i data-lucide="download"></i> Download
                     Template CSV</button>
-                <button class="btn btn-primary" onclick="closeHelpModal()">Close</button>
+                <button class="btn btn-primary" id="close-help-footer-btn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Detail Modal -->
+    <div id="image-detail-modal" class="modal">
+        <div class="modal-content large">
+            <header>
+                <h3 id="detail-name">Image Name</h3>
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <span id="detail-nav-info" style="opacity:0.6; font-size:0.85rem;">1 / 10</span>
+                    <button class="close-btn" id="close-detail-btn">&times;</button>
+                </div>
+            </header>
+            <div class="detail-body">
+                <div class="detail-image">
+                    <img id="detail-img" src="" alt="">
+                </div>
+                <div class="detail-info">
+                    <div class="detail-meta" id="detail-meta"></div>
+                    <div class="detail-prompt">
+                        <label>Positive Prompt</label>
+                        <code id="detail-prompt-text" class="prompt-display"></code>
+                    </div>
+                    <div class="detail-prompt">
+                        <label>Negative Prompt</label>
+                        <code id="detail-negative-text" class="prompt-display negative"></code>
+                    </div>
+                    <div class="detail-actions">
+                        <button class="btn btn-success" id="btn-approve">Approve (A)</button>
+                        <button class="btn btn-danger" id="btn-reject">Reject (R)</button>
+                        <span style="opacity:0.5; font-size:0.8rem; margin-left:8px;">Arrow keys to navigate</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

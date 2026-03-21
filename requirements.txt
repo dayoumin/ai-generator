@@ -5,3 +5,5 @@ openpyxl
 websockets
 aiohttp
 python-multipart
+boto3
+python-dotenv

@@ -1,74 +1,157 @@
-
 // --- Initialization ---
+const AppState = {
+    currentPrompts: [],
+    lastLogCount: 0,
+    lastResultCount: 0,
+    lastStatusData: null
+};
+
 document.addEventListener('DOMContentLoaded', () => {
     lucide.createIcons();
     initTabs();
-
-    // Bind global events
-    window.openHelpModal = openHelpModal;
-    window.closeHelpModal = closeHelpModal;
-    window.openConfirmModal = openConfirmModal;
-    window.closeConfirmModal = closeConfirmModal;
-    window.confirmStartBatch = confirmStartBatch;
-    window.loadAppConfig = loadAppConfig;
-    window.saveAppConfig = saveAppConfig;
-    window.toggleCustomPromptForm = toggleCustomPromptForm;
-    window.clearPromptList = clearPromptList;
-    window.addCustomPrompt = addCustomPrompt;
-    window.applyPreset = applyPreset;
-    window.downloadTemplate = downloadTemplate;
-    window.toggleAllPrompts = toggleAllPrompts;
-    window.clearLogs = () => document.getElementById(CONFIG.DOM.LOGS).innerHTML = '';
-    window.closeModal = () => document.getElementById(CONFIG.MODALS.MAPPING).style.display = 'none';
-
-    // Init Data
+    initEventListeners();
+    initGalleryFilters();
     loadPromptFiles();
     loadAppConfig();
     try { loadConfig(); } catch (e) { }
-    pollStatus();
+    checkComfyUIHealth();
+    setInterval(checkComfyUIHealth, 30000);
 });
 
-// --- Tab Management ---
-function initTabs() {
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.onclick = (e) => {
-            e.preventDefault();
-            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+function initEventListeners() {
+    // UI Buttons
+    Utils.el(CONFIG.DOM.START_BTN)?.addEventListener('click', openConfirmModal);
+    Utils.el(CONFIG.DOM.FAB_BTN)?.addEventListener('click', openConfirmModal);
+    Utils.el('r2-upload-btn')?.addEventListener('click', uploadToR2);
+    Utils.el('clear-logs-btn')?.addEventListener('click', () => {
+        Utils.el(CONFIG.DOM.LOGS).innerHTML = '';
+        AppState.lastLogCount = 0;
+    });
+    Utils.el('open-help-btn')?.addEventListener('click', openHelpModal);
+    Utils.el('clear-prompts-btn')?.addEventListener('click', clearPromptList);
+    Utils.el('toggle-custom-form-btn')?.addEventListener('click', toggleCustomPromptForm);
+    Utils.el('add-custom-prompt-btn')?.addEventListener('click', addCustomPrompt);
+    Utils.el('download-template-btn')?.addEventListener('click', downloadTemplate);
+    Utils.el(CONFIG.DOM.PROMPT_FILE_SELECTOR)?.addEventListener('change', (e) => loadPromptContent(e.target.value));
 
-            item.classList.add('active');
-            document.getElementById(`${item.dataset.tab}-tab`).classList.add('active');
-        };
+    // Settings
+    Utils.el('save-settings-btn')?.addEventListener('click', () => { saveAppConfig(); alert('Settings Saved!'); });
+    Utils.el('clear-all-data-btn')?.addEventListener('click', () => {
+        Utils.el(CONFIG.DOM.LOGS).innerHTML = '';
+        Utils.el(CONFIG.DOM.GALLERY).innerHTML = '';
+        AppState.lastLogCount = 0;
+        AppState.lastResultCount = 0;
+    });
+
+    // Modals
+    Utils.el('cancel-confirm-btn')?.addEventListener('click', closeConfirmModal);
+    Utils.el('start-now-btn')?.addEventListener('click', confirmStartBatch);
+    Utils.el('close-help-btn')?.addEventListener('click', closeHelpModal);
+    Utils.el('close-help-footer-btn')?.addEventListener('click', closeHelpModal);
+    Utils.el('close-mapping-btn')?.addEventListener('click', () => Utils.el(CONFIG.MODALS.MAPPING).style.display = 'none');
+    Utils.el('copy-mapping-btn')?.addEventListener('click', () => {
+        const textarea = Utils.el('mapping-json');
+        if (textarea) { navigator.clipboard.writeText(textarea.value); alert('Copied!'); }
+    });
+    Utils.el('close-detail-btn')?.addEventListener('click', closeImageDetail);
+    Utils.el('btn-approve')?.addEventListener('click', () => reviewCurrentImage('approved'));
+    Utils.el('btn-reject')?.addEventListener('click', () => reviewCurrentImage('rejected'));
+
+    // Inputs & Selects
+    Utils.el('style-preset')?.addEventListener('change', applyPreset);
+    Utils.el('steps')?.addEventListener('input', (e) => Utils.el('steps-val').innerText = e.target.value);
+    Utils.el('toggle-all-checkbox')?.addEventListener('change', (e) => toggleAllPrompts(e.target));
+
+    // Settings Auto-save
+    const settings = Object.values(CONFIG.DOM.SETTINGS);
+    settings.forEach(id => Utils.el(id)?.addEventListener('change', saveAppConfig));
+
+    // Keyboard shortcuts for image detail modal
+    document.addEventListener('keydown', (e) => {
+        const modal = Utils.el('image-detail-modal');
+        if (!modal || modal.style.display !== 'flex') return;
+        if (e.key === 'Escape') closeImageDetail();
+        if (e.key === 'a') reviewCurrentImage('approved');
+        if (e.key === 'r') reviewCurrentImage('rejected');
+        if (e.key === 'ArrowRight') navigateDetail(1);
+        if (e.key === 'ArrowLeft') navigateDetail(-1);
     });
 }
 
-// --- Global Data ---
-let currentPrompts = [];
+// --- Tab Management ---
+function initTabs() {
+    document.querySelector('.nav-menu')?.addEventListener('click', (e) => {
+        const item = e.target.closest('.nav-item');
+        if (item) {
+            e.preventDefault();
+            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            item.classList.add('active');
+            document.getElementById(`${item.dataset.tab}-tab`).classList.add('active');
+        }
+    });
+}
 
+// --- ComfyUI Health Check ---
+async function checkComfyUIHealth() {
+    const dot = document.querySelector('.status-indicator .dot');
+    const label = document.querySelector('.status-indicator span:last-child');
+    try {
+        const resp = await fetch(CONFIG.API.HEALTH);
+        const data = await resp.json();
+        if (data.comfyui) {
+            dot?.classList.add('green');
+            dot?.classList.remove('red');
+            if (label) label.textContent = 'ComfyUI Live';
+        } else {
+            dot?.classList.remove('green');
+            dot?.classList.add('red');
+            if (label) label.textContent = 'ComfyUI Offline';
+        }
+    } catch {
+        dot?.classList.remove('green');
+        dot?.classList.add('red');
+        if (label) label.textContent = 'Server Error';
+    }
+}
+
+// --- R2 Upload ---
+async function uploadToR2() {
+    const btn = Utils.el('r2-upload-btn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="spinner"></i> Uploading...'; }
+    try {
+        const resp = await fetch(CONFIG.API.UPLOAD_R2, { method: 'POST' });
+        const data = await resp.json();
+        if (data.error) {
+            alert('Upload failed: ' + data.error);
+        } else {
+            alert(`Upload complete! ${Object.keys(data.mappings || {}).length} files uploaded.`);
+        }
+    } catch (e) {
+        alert('Upload failed: ' + e.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="cloud-upload"></i> Upload to R2'; }
+        lucide.createIcons();
+    }
+}
 
 // --- UI Helpers ---
-function openHelpModal() {
-    document.getElementById(CONFIG.MODALS.HELP).style.display = 'flex';
-}
-
-function closeHelpModal() {
-    document.getElementById(CONFIG.MODALS.HELP).style.display = 'none';
-}
+function openHelpModal() { document.getElementById(CONFIG.MODALS.HELP).style.display = 'flex'; }
+function closeHelpModal() { document.getElementById(CONFIG.MODALS.HELP).style.display = 'none'; }
 
 function downloadTemplate() {
     const csvContent = "\uFEFFdesc_ko,prompt,aspect_ratio,seed,extra_positive,extra_negative\n예시_용,A majestic blue dragon,16:9,,highly detailed,watermark";
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", "kemi_prompt_template.csv");
+    link.href = URL.createObjectURL(blob);
+    link.download = "kemi_prompt_template.csv";
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
+    setTimeout(() => { document.body.removeChild(link); URL.revokeObjectURL(link.href); }, 100);
 }
 
-// --- Settings & Persistence ---
+// --- Settings ---
 function toggleTooltips(enabled) {
     if (enabled) document.body.classList.add('tooltips-enabled');
     else document.body.classList.remove('tooltips-enabled');
@@ -78,22 +161,16 @@ function playNotificationSound() {
     try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         if (ctx.state === 'suspended') ctx.resume();
-
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-
+        osc.connect(gain); gain.connect(ctx.destination);
         osc.type = 'sine';
         osc.frequency.setValueAtTime(523.25, ctx.currentTime);
         osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.15);
-
         gain.gain.setValueAtTime(0.1, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.1, ctx.currentTime + 0.1);
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
-
-        osc.start();
-        osc.stop(ctx.currentTime + 0.6);
+        osc.start(); osc.stop(ctx.currentTime + 0.6);
     } catch (e) { }
 }
 
@@ -108,8 +185,6 @@ function saveAppConfig() {
     };
     localStorage.setItem('kemi_config', JSON.stringify(config));
     toggleTooltips(config.showTooltips);
-
-    // Sync active AR selector
     const defAr = document.getElementById('default-ar');
     if (defAr && defAr.value !== config.defaultAr) defAr.value = config.defaultAr;
 }
@@ -119,24 +194,18 @@ function loadAppConfig() {
     if (saved) {
         try {
             const config = JSON.parse(saved);
-
             Utils.setVal(CONFIG.DOM.SETTINGS.TOOLTIPS, config.showTooltips);
             Utils.setVal(CONFIG.DOM.SETTINGS.STEPS, config.defaultSteps || CONFIG.DEFAULTS.STEPS);
             Utils.setVal(CONFIG.DOM.SETTINGS.REPEAT, config.defaultRepeat || CONFIG.DEFAULTS.REPEAT);
             Utils.setVal(CONFIG.DOM.SETTINGS.AR, config.defaultAr || CONFIG.DEFAULTS.AR);
             Utils.setVal(CONFIG.DOM.SETTINGS.AUTOCLEAR, config.autoClear);
             Utils.setVal(CONFIG.DOM.SETTINGS.SOUND, config.taskSound !== false);
-
             toggleTooltips(config.showTooltips);
-
-            // Apply Defaults to Main UI
             Utils.setVal('steps', config.defaultSteps || CONFIG.DEFAULTS.STEPS);
             const stepsVal = document.getElementById('steps-val');
             if (stepsVal) stepsVal.innerText = config.defaultSteps || CONFIG.DEFAULTS.STEPS;
-
             Utils.setVal('batch-count', config.defaultRepeat || CONFIG.DEFAULTS.REPEAT);
             Utils.setVal('default-ar', config.defaultAr || CONFIG.DEFAULTS.AR);
-
         } catch (e) { console.error("Config load failed", e); }
     } else {
         toggleTooltips(true);
@@ -149,21 +218,15 @@ async function loadPromptFiles() {
         const resp = await fetch(CONFIG.API.PROMPT_FILES);
         const data = await resp.json();
         const select = document.getElementById(CONFIG.DOM.PROMPT_FILE_SELECTOR);
-
         select.innerHTML = '';
         data.files.forEach(f => {
             const opt = document.createElement('option');
-            opt.value = f;
-            opt.innerText = f;
+            opt.value = f; opt.innerText = f;
             if (f === 'thumbnail-prompts.csv') opt.selected = true;
             select.appendChild(opt);
         });
-
         loadPromptContent(select.value);
-        select.onchange = () => loadPromptContent(select.value);
-    } catch (e) {
-        console.error("Failed to load files", e);
-    }
+    } catch (e) { console.error("Failed to load files", e); }
 }
 
 async function loadPromptContent(filename) {
@@ -171,12 +234,10 @@ async function loadPromptContent(filename) {
         const resp = await fetch(`${CONFIG.API.PROMPT_CONTENT}?filename=${filename}`);
         const data = await resp.json();
         if (data.prompts) {
-            currentPrompts = data.prompts;
-            renderPromptTable(currentPrompts);
+            AppState.currentPrompts = data.prompts;
+            renderPromptTable(AppState.currentPrompts);
         }
-    } catch (e) {
-        console.error("Failed to load content", e);
-    }
+    } catch (e) { console.error("Failed to load content", e); }
 }
 
 function renderPromptTable(prompts) {
@@ -194,32 +255,23 @@ function renderPromptTable(prompts) {
             <td><code>${p.prompt}</code></td>
         </tr>
     `).join('');
-
     updateSelectionCounts();
-
-    document.querySelectorAll('.prompt-checkbox').forEach(cb => {
-        cb.onchange = updateSelectionCounts;
-    });
+    document.querySelectorAll('.prompt-checkbox').forEach(cb => { cb.onchange = updateSelectionCounts; });
 }
 
 function updateSelectionCounts() {
-    const total = document.querySelectorAll('.prompt-checkbox').length;
     const checked = document.querySelectorAll('.prompt-checkbox:checked').length;
-
     const selEl = document.getElementById(CONFIG.DOM.SELECTION_COUNT);
     if (selEl) selEl.innerText = `${checked} Selected`;
-
     const btn = document.getElementById(CONFIG.DOM.FAB_BTN);
     if (btn) btn.innerText = `Generate Selected (${checked})`;
 }
 
 function toggleAllPrompts(source) {
-    const checkboxes = document.querySelectorAll('.prompt-checkbox');
-    checkboxes.forEach(cb => cb.checked = source.checked);
+    document.querySelectorAll('.prompt-checkbox').forEach(cb => cb.checked = source.checked);
     updateSelectionCounts();
 }
 
-// --- Custom Prompts ---
 function toggleCustomPromptForm() {
     const form = document.getElementById('custom-prompt-form');
     form.style.display = form.style.display === 'none' ? 'block' : 'none';
@@ -227,8 +279,8 @@ function toggleCustomPromptForm() {
 
 function clearPromptList() {
     if (confirm("전체 리스트를 삭제하시겠습니까?")) {
-        currentPrompts = [];
-        renderPromptTable(currentPrompts);
+        AppState.currentPrompts = [];
+        renderPromptTable(AppState.currentPrompts);
     }
 }
 
@@ -236,22 +288,9 @@ function addCustomPrompt() {
     const desc = document.getElementById('custom-desc').value.trim();
     const promptText = document.getElementById('custom-prompt').value.trim();
     const ar = document.getElementById('custom-ar').value;
-
-    if (!desc || !promptText) {
-        alert("Please enter both Description and Prompt");
-        return;
-    }
-
-    const newPrompt = {
-        desc_ko: desc,
-        prompt: promptText,
-        aspect_ratio: ar,
-        is_manual: true
-    };
-
-    currentPrompts.unshift(newPrompt);
-    renderPromptTable(currentPrompts);
-
+    if (!desc || !promptText) { alert("Please enter both Description and Prompt"); return; }
+    AppState.currentPrompts.unshift({ desc_ko: desc, prompt: promptText, aspect_ratio: ar, is_manual: true });
+    renderPromptTable(AppState.currentPrompts);
     document.getElementById('custom-desc').value = '';
     document.getElementById('custom-prompt').value = '';
     document.getElementById('custom-desc').focus();
@@ -260,7 +299,6 @@ function addCustomPrompt() {
 function applyPreset() {
     const val = document.getElementById('style-preset').value;
     if (val === 'custom') return;
-
     const preset = CONFIG.STYLE_PRESETS[val];
     if (preset) {
         document.getElementById('style-prompt').value = preset.p;
@@ -272,60 +310,31 @@ function applyPreset() {
 function openConfirmModal() {
     const checked = document.querySelectorAll('.prompt-checkbox:checked').length;
     if (checked === 0) return alert("Please select at least one prompt!");
-
     const repeat = parseInt(document.getElementById('batch-count').value) || 1;
     const total = checked * 2 * repeat;
-    const timeEst = Math.ceil(total * 4 / 60);
-
+    const timeEst = Math.ceil(total * 12 / 60); // ~12s per image average
     const modal = document.getElementById(CONFIG.MODALS.CONFIRM);
     const p = modal.querySelector('p');
-    if (p) p.innerHTML = `Generate <strong>${total} images</strong>?<br><span style="font-size:0.9em; opacity:0.8">(${checked} prompts × ${repeat} variations × 2 sizes)</span>`;
-
+    if (p) p.innerHTML = `Generate <strong>${total} images</strong>?<br><span style="font-size:0.9em; opacity:0.8">(${checked} prompts x ${repeat} variations x 2 sizes)</span>`;
     const sub = modal.querySelector('.sub-text');
-    if (sub) sub.innerText = `Estimated time: ~${timeEst} minutes on RTX 5080`;
-
+    if (sub) sub.innerText = `Estimated time: ~${timeEst} minutes`;
     modal.style.display = 'flex';
 }
 
-function closeConfirmModal() {
-    document.getElementById(CONFIG.MODALS.CONFIRM).style.display = 'none';
-}
+function closeConfirmModal() { document.getElementById(CONFIG.MODALS.CONFIRM).style.display = 'none'; }
 
 async function confirmStartBatch() {
     closeConfirmModal();
-
-    // Auto-Clear Logic
     if (Utils.isChecked(CONFIG.DOM.SETTINGS.AUTOCLEAR)) {
-        const gal = document.getElementById(CONFIG.DOM.GALLERY);
-        if (gal) gal.innerHTML = '';
-        const logs = document.getElementById(CONFIG.DOM.LOGS);
-        if (logs) logs.innerHTML = '';
+        const gal = Utils.el(CONFIG.DOM.GALLERY); if (gal) gal.innerHTML = '';
+        const logs = Utils.el(CONFIG.DOM.LOGS); if (logs) logs.innerHTML = '';
+        AppState.lastLogCount = 0;
+        AppState.lastResultCount = 0;
     }
-
     const selectedIdxs = Array.from(document.querySelectorAll('.prompt-checkbox:checked')).map(cb => parseInt(cb.dataset.idx));
     if (selectedIdxs.length === 0) return;
-
-    const selectedPrompts = currentPrompts.filter((_, i) => selectedIdxs.includes(i));
-
-    const startBtn = document.getElementById(CONFIG.DOM.START_BTN);
-    const fabBtn = document.getElementById(CONFIG.DOM.FAB_BTN);
-    const statusEl = document.getElementById(CONFIG.DOM.STATUS_TEXT);
-
-    const setBusy = (isBusy) => {
-        if (startBtn) {
-            startBtn.disabled = isBusy;
-            startBtn.innerHTML = isBusy ? '<i class="spinner"></i> Generating...' : '<i data-lucide="play"></i> Start Batch';
-        }
-        if (fabBtn) {
-            fabBtn.disabled = isBusy;
-            fabBtn.innerHTML = isBusy ? '<i class="spinner"></i> Generating...' : '<i data-lucide="play"></i> Generate Selected';
-        }
-        if (!isBusy) lucide.createIcons();
-    };
-
+    const selectedPrompts = AppState.currentPrompts.filter((_, i) => selectedIdxs.includes(i));
     setBusy(true);
-    if (statusEl) statusEl.innerText = "🚀 Starting...";
-
     try {
         await fetch(CONFIG.API.START_BATCH, {
             method: 'POST',
@@ -347,87 +356,225 @@ async function confirmStartBatch() {
     }
 }
 
+function setBusy(isBusy) {
+    const startBtn = Utils.el(CONFIG.DOM.START_BTN);
+    const fabBtn = Utils.el(CONFIG.DOM.FAB_BTN);
+    if (startBtn) {
+        startBtn.disabled = isBusy;
+        startBtn.innerHTML = isBusy ? '<i class="spinner"></i> Generating...' : '<i data-lucide="play"></i> Start Batch';
+    }
+    if (fabBtn) {
+        fabBtn.disabled = isBusy;
+        fabBtn.innerHTML = isBusy ? '<i class="spinner"></i> Generating...' : '<i data-lucide="play"></i> Generate Selected';
+    }
+    if (!isBusy) lucide.createIcons();
+}
+
+// --- Status Polling ---
 async function pollStatus() {
     const interval = setInterval(async () => {
         try {
             const resp = await fetch(CONFIG.API.STATUS);
             const data = await resp.json();
-
             updateUI(data);
 
-            const isStopped = !data.is_running;
-            const isFinished = data.current_item === 'Finished';
-            const hasErrors = data.logs.some(l => l.includes('❌') || l.includes('⚠️'));
-
-            if (isStopped && (isFinished || hasErrors || data.completed > 0)) {
+            if (!data.is_running && data.finish_status) {
                 clearInterval(interval);
-
-                const startBtn = document.getElementById(CONFIG.DOM.START_BTN);
-                const fabBtn = document.getElementById(CONFIG.DOM.FAB_BTN);
-                if (startBtn) {
-                    startBtn.disabled = false;
-                    startBtn.innerHTML = '<i data-lucide="play"></i> Start Batch';
+                setBusy(false);
+                const statusEl = Utils.el(CONFIG.DOM.STATUS_TEXT);
+                if (data.finish_status === "success") {
+                    statusEl.innerHTML = `<span style="color:var(--accent)">Completed — ${data.succeeded}/${data.total} succeeded</span>`;
+                } else if (data.finish_status === "partial") {
+                    statusEl.innerHTML = `<span style="color:#f59e0b">Completed — ${data.succeeded}/${data.total} succeeded (${data.warnings} warning)</span>`;
+                } else if (data.finish_status === "cancelled") {
+                    statusEl.innerHTML = `<span style="color:var(--text-muted)">Cancelled — ${data.succeeded}/${data.total} completed</span>`;
+                } else if (data.finish_status === "error") {
+                    statusEl.innerHTML = `<span style="color:var(--danger)">Error — ${data.succeeded}/${data.total} succeeded (${data.errors} error)</span>`;
                 }
-                if (fabBtn) {
-                    fabBtn.disabled = false;
-                    fabBtn.innerHTML = '<i data-lucide="play"></i> Generate Selected';
-                }
-                lucide.createIcons();
-
-                if (isFinished && !hasErrors) {
-                    if (Utils.isChecked(CONFIG.DOM.SETTINGS.SOUND)) playNotificationSound();
-                } else if (hasErrors && !data.is_running) {
-                    const statusEl = document.getElementById(CONFIG.DOM.STATUS_TEXT);
-                    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">⚠️ Generation Stopped with Errors</span>';
+                if (data.finish_status !== "error" && Utils.isChecked(CONFIG.DOM.SETTINGS.SOUND)) {
+                    playNotificationSound();
                 }
             }
         } catch (e) { console.error("Poll Error:", e); }
     }, 1000);
 }
 
+// --- UI Update ---
 function updateUI(data) {
-    const totalEl = document.getElementById(CONFIG.DOM.TOTAL_TASKS);
+    AppState.lastStatusData = data;
+
+    // Stats
+    const totalEl = Utils.el(CONFIG.DOM.TOTAL_TASKS);
     if (totalEl) totalEl.innerText = `${data.completed} / ${data.total}`;
 
     const percent = data.total > 0 ? (data.completed / data.total * 100) : 0;
-    const progEl = document.getElementById(CONFIG.DOM.PROGRESS_TEXT);
+    const progEl = Utils.el(CONFIG.DOM.PROGRESS_TEXT);
     if (progEl) progEl.innerText = `${Math.round(percent)}%`;
 
-    const barEl = document.getElementById(CONFIG.DOM.PROGRESS_BAR);
+    const barEl = Utils.el(CONFIG.DOM.PROGRESS_BAR);
     if (barEl) barEl.style.width = `${percent}%`;
 
-    const statusEl = document.getElementById(CONFIG.DOM.STATUS_TEXT);
-    const hasErrorLog = data.logs.some(log => log.includes('❌') || log.includes('⚠️'));
-
-    if (hasErrorLog && !data.is_running) {
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">⚠️ Error Occurred</span>';
-    } else {
-        if (statusEl) statusEl.innerText = data.current_item || 'Idle';
+    // Status with ETA
+    const statusEl = Utils.el(CONFIG.DOM.STATUS_TEXT);
+    if (data.is_running && statusEl) {
+        let statusText = data.current_item || 'Processing...';
+        const durations = data.timing?.image_durations || [];
+        if (durations.length > 0 && data.completed < data.total) {
+            const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+            const remaining = data.total - data.completed;
+            const etaSec = Math.round(avg * remaining);
+            const etaMin = Math.floor(etaSec / 60);
+            const etaRemSec = etaSec % 60;
+            statusText += ` — ETA: ${etaMin}m ${etaRemSec}s (avg ${avg.toFixed(1)}s/image)`;
+        }
+        statusEl.innerText = statusText;
     }
 
-    const logContainer = document.getElementById(CONFIG.DOM.LOGS);
-    if (logContainer) {
-        logContainer.innerHTML = data.logs.map(log => {
-            const isError = log.includes('❌') || log.includes('⚠️');
-            return `<div class="log-entry ${isError ? 'error' : ''}">${log}</div>`;
-        }).join('');
+    // Logs (incremental)
+    const logContainer = Utils.el(CONFIG.DOM.LOGS);
+    if (logContainer && data.logs.length > AppState.lastLogCount) {
+        const newLogs = data.logs.slice(AppState.lastLogCount);
+        newLogs.forEach(log => {
+            const isError = log.includes('ERROR') || log.includes('Fatal');
+            const isWarning = log.includes('WARN') || log.includes('Timeout');
+            const isSuccess = log.includes('OK ');
+            const logClass = isError ? 'error' : isWarning ? 'warning' : isSuccess ? 'success' : '';
+            logContainer.insertAdjacentHTML('beforeend', `<div class="log-entry ${logClass}">${log}</div>`);
+        });
+        AppState.lastLogCount = data.logs.length;
         logContainer.scrollTop = logContainer.scrollHeight;
     }
 
-    if (data.results.length > 0) {
-        const last = data.results[data.results.length - 1];
-        const previewDisplay = document.getElementById(CONFIG.DOM.PREVIEW);
-        if (previewDisplay) previewDisplay.innerHTML = `<img src="${last.url}" class="fade-in">`;
+    // Gallery (incremental)
+    if (data.results.length > AppState.lastResultCount) {
+        const gallery = Utils.el(CONFIG.DOM.GALLERY);
+        const newItems = data.results.slice(AppState.lastResultCount);
+        newItems.forEach((item, i) => {
+            const idx = AppState.lastResultCount + i;
+            const div = document.createElement('div');
+            div.className = `gallery-item ${item.type} ${item.status || 'success'}`;
+            div.dataset.index = idx;
 
-        const gallery = document.getElementById(CONFIG.DOM.GALLERY);
-        if (gallery && data.results.length > gallery.children.length) {
-            const newItems = data.results.slice(gallery.children.length);
-            newItems.forEach(item => {
-                const div = document.createElement('div');
-                div.className = `gallery-item ${item.type}`;
-                div.innerHTML = `<img src="${item.url}" title="${item.name} (${item.type})">`;
-                gallery.appendChild(div);
-            });
+            if (item.url) {
+                div.innerHTML = `
+                    <img src="${item.url}" alt="${item.name}" loading="lazy">
+                    <div class="gallery-overlay">
+                        <span class="gallery-name">${item.name}</span>
+                        <span class="badge ${item.type}">${item.type}</span>
+                        ${item.review_status && item.review_status !== 'pending' ? `<span class="review-badge ${item.review_status}">${item.review_status === 'approved' ? 'Approved' : 'Rejected'}</span>` : ''}
+                    </div>`;
+            } else {
+                div.innerHTML = `
+                    <div class="gallery-placeholder ${item.status}">
+                        <span>${item.status === 'timeout' ? 'Timed Out' : 'Failed'}</span>
+                        <span class="gallery-name">${item.name} (${item.type})</span>
+                    </div>`;
+            }
+            div.addEventListener('click', () => openImageDetail(idx));
+            gallery?.appendChild(div);
+        });
+        AppState.lastResultCount = data.results.length;
+
+        // Live preview - show latest successful image from new items only
+        const lastSuccess = [...newItems].reverse().find(r => r.url);
+        if (lastSuccess) {
+            const previewEl = Utils.el(CONFIG.DOM.PREVIEW);
+            if (previewEl) previewEl.innerHTML = `<img src="${lastSuccess.url}" class="fade-in">`;
         }
     }
 }
+
+// --- Gallery Filters ---
+function initGalleryFilters() {
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const filter = btn.dataset.filter;
+            document.querySelectorAll('.gallery-item').forEach(item => {
+                item.style.display = (filter === 'all' || item.classList.contains(filter)) ? '' : 'none';
+            });
+        });
+    });
+}
+
+// --- Image Detail Modal ---
+let currentDetailIndex = -1;
+
+function openImageDetail(index) {
+    const data = getStatusData();
+    if (!data || index < 0 || index >= data.results.length) return;
+    currentDetailIndex = index;
+    const item = data.results[index];
+    const modal = Utils.el('image-detail-modal');
+    if (!modal) return;
+
+    Utils.el('detail-name').textContent = `${item.name} (${item.type})`;
+    const img = Utils.el('detail-img');
+    if (item.url) {
+        img.src = item.url;
+        img.style.display = 'block';
+    } else {
+        img.style.display = 'none';
+    }
+
+    const meta = Utils.el('detail-meta');
+    meta.innerHTML = `
+        <div><strong>Status:</strong> <span class="badge ${item.status}">${item.status}</span></div>
+        <div><strong>Type:</strong> ${item.type} (${item.width}x${item.height})</div>
+        <div><strong>Duration:</strong> ${item.duration ? item.duration.toFixed(1) + 's' : 'N/A'}</div>
+        <div><strong>Review:</strong> <span class="review-badge ${item.review_status || 'pending'}">${item.review_status || 'pending'}</span></div>
+    `;
+
+    Utils.el('detail-prompt-text').textContent = item.positive || item.prompt || '';
+    Utils.el('detail-negative-text').textContent = item.negative || '';
+
+    // Navigation info
+    Utils.el('detail-nav-info').textContent = `${index + 1} / ${data.results.length}`;
+
+    modal.style.display = 'flex';
+}
+
+function closeImageDetail() {
+    const modal = Utils.el('image-detail-modal');
+    if (modal) modal.style.display = 'none';
+    currentDetailIndex = -1;
+}
+
+function navigateDetail(direction) {
+    const data = getStatusData();
+    if (!data) return;
+    const newIndex = currentDetailIndex + direction;
+    if (newIndex >= 0 && newIndex < data.results.length) {
+        openImageDetail(newIndex);
+    }
+}
+
+async function reviewCurrentImage(status) {
+    if (currentDetailIndex < 0) return;
+    try {
+        await fetch(`${CONFIG.API.REVIEW}/${currentDetailIndex}/review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status })
+        });
+        // Update local display
+        const badge = document.querySelector(`#image-detail-modal .review-badge`);
+        if (badge) {
+            badge.className = `review-badge ${status}`;
+            badge.textContent = status;
+        }
+        // Update gallery item
+        const galleryItem = document.querySelector(`.gallery-item[data-index="${currentDetailIndex}"]`);
+        if (galleryItem) {
+            galleryItem.querySelectorAll('.review-badge').forEach(b => b.remove());
+            if (status !== 'pending') {
+                const overlay = galleryItem.querySelector('.gallery-overlay');
+                if (overlay) overlay.insertAdjacentHTML('beforeend',
+                    `<span class="review-badge ${status}">${status === 'approved' ? 'Approved' : 'Rejected'}</span>`);
+            }
+        }
+    } catch (e) { console.error('Review failed:', e); }
+}
+
+function getStatusData() { return AppState.lastStatusData; }

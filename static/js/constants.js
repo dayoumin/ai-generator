@@ -2,7 +2,11 @@ const CONFIG = {
     APP_NAME: "Kemi AI Studio",
     API: {
         START_BATCH: '/api/batch/start',
+        CANCEL_BATCH: '/api/batch/cancel',
         STATUS: '/api/batch/status',
+        HEALTH: '/api/health',
+        UPLOAD_R2: '/api/upload',
+        REVIEW: '/api/results',  // + /{index}/review
         PROMPT_FILES: '/api/prompts/files',
         PROMPT_CONTENT: '/api/prompts/content'
     },
