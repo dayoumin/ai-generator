@@ -564,9 +564,16 @@ async def crop_images(project: str = "mbti"):
                 out_path = os.path.join(crop_output_dir, out_name)
                 cropped_img.save(out_path, "WEBP", quality=85)
 
+                # R2 키 생성: _category(breeds/dogs) + 결과명 기반
+                category = result.get("_category", "misc")
+                safe_result_name = re.sub(r'[<>:"/\\|?*\s]', '-', result.get("name", "unknown")).lower().strip('-')
+                r2_key = f"{category}/{safe_result_name}_{crop_name}.webp"
+
                 result_crops[crop_name] = {
                     "path": out_path,
-                    "url": f"/outputs/kemi/cropped/{out_name}",
+                    "localUrl": f"/outputs/kemi/cropped/{out_name}",
+                    "r2Key": r2_key,
+                    "url": f"/api/images/{r2_key}",
                     "width": tw,
                     "height": th,
                 }
@@ -598,7 +605,7 @@ async def get_manifest(project: str = "mbti"):
         for crop_name, crop_info in crops.items():
             assets.append({
                 "cropType": crop_name,
-                "localPath": crop_info["path"],
+                "r2Key": crop_info.get("r2Key", ""),
                 "url": crop_info["url"],
                 "width": crop_info["width"],
                 "height": crop_info["height"],
@@ -645,20 +652,27 @@ async def upload_to_r2():
         )
         bucket_name = os.getenv('R2_BUCKET_NAME')
         mappings = {}
+        uploaded = 0
 
-        for root, _, files in os.walk(os.path.join(OUTPUT_DIR, "kemi")):
-            for file in files:
-                if file.endswith(('.png', '.webp')):
-                    file_path = os.path.join(root, file)
-                    rel_path = os.path.relpath(file_path, OUTPUT_DIR).replace("\\", "/")
-                    content_type = 'image/webp' if file.endswith('.webp') else 'image/png'
-                    await asyncio.to_thread(
-                        s3.upload_file, file_path, bucket_name, rel_path,
-                        ExtraArgs={'ContentType': content_type}
-                    )
-                    mappings[file] = f"https://{bucket_name}.r2.dev/{rel_path}"
+        # 크롭된 이미지를 R2 키 기반으로 업로드
+        results = batch_status.get("results", [])
+        for result in results:
+            crops = result.get("_crops", {})
+            for crop_name, crop_info in crops.items():
+                local_path = crop_info.get("path", "")
+                r2_key = crop_info.get("r2Key", "")
+                if not local_path or not r2_key or not os.path.exists(local_path):
+                    continue
+                content_type = 'image/webp' if local_path.endswith('.webp') else 'image/png'
+                await asyncio.to_thread(
+                    s3.upload_file, local_path, bucket_name, r2_key,
+                    ExtraArgs={'ContentType': content_type}
+                )
+                mappings[r2_key] = f"/api/images/{r2_key}"
+                uploaded += 1
 
-        return {"status": "success", "mappings": mappings}
+        add_log(f"Uploaded {uploaded} images to R2", "success")
+        return {"status": "success", "mappings": mappings, "uploaded": uploaded}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
