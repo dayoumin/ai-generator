@@ -49,8 +49,8 @@ def add_log(message, level="info"):
     batch_status["logs"].append(entry)
 
 
-def make_result_entry(desc, t, prompt_text, final_positive, final_negative, width, height, *, url=None, local_path=None, status="success", duration=0):
-    return {
+def make_result_entry(desc, t, prompt_text, final_positive, final_negative, width, height, *, url=None, local_path=None, status="success", duration=0, row=None):
+    entry = {
         "name": desc, "type": t, "prompt": prompt_text,
         "positive": final_positive, "negative": final_negative,
         "width": width, "height": height,
@@ -58,6 +58,11 @@ def make_result_entry(desc, t, prompt_text, final_positive, final_negative, widt
         "status": status, "review_status": "pending",
         "duration": duration
     }
+    if row:
+        for key in ("_source_id", "_subject_key", "_result_index", "_category", "_target_crops"):
+            if key in row:
+                entry[key] = row[key]
+    return entry
 
 
 # --- Global State ---
@@ -141,7 +146,7 @@ async def health_check():
 
 @app.get("/api/prompts/files")
 async def list_prompt_files():
-    files = [f for f in os.listdir(PROMPTS_DIR) if f.endswith('.csv')]
+    files = [f for f in os.listdir(PROMPTS_DIR) if f.endswith(('.csv', '.json'))]
     return {"files": files}
 
 
@@ -149,11 +154,13 @@ async def list_prompt_files():
 async def get_prompt_content(filename: str = "thumbnail-prompts.csv"):
     if not validate_filename(filename):
         return {"error": "Invalid filename", "prompts": []}
-    path = os.path.join(PROMPTS_DIR, filename)
-    if not os.path.exists(path):
+    filepath = os.path.join(PROMPTS_DIR, filename)
+    if not os.path.exists(filepath):
         return {"error": "File not found", "prompts": []}
     try:
-        df = pd.read_csv(path)
+        if filename.endswith('.json'):
+            return _load_json_prompts(filepath, filename)
+        df = pd.read_csv(filepath)
         if 'desc_ko' not in df.columns or 'prompt' not in df.columns:
             return {"error": "Invalid CSV format (Missing desc_ko or prompt columns)", "prompts": []}
         df = df.fillna('')
@@ -163,6 +170,29 @@ async def get_prompt_content(filename: str = "thumbnail-prompts.csv"):
         return {"filename": filename, "prompts": prompts}
     except Exception as e:
         return {"error": str(e), "prompts": []}
+
+
+def _load_json_prompts(filepath: str, filename: str):
+    """prompts.json (extract-prompts.ts 출력) → CSV 호환 형식으로 변환"""
+    with open(filepath, "r", encoding="utf-8") as f:
+        items = json.load(f)
+    prompts = []
+    for i, item in enumerate(items):
+        prompts.append({
+            "id": i,
+            "desc_ko": item.get("name", ""),
+            "prompt": item.get("prompt", ""),
+            "aspect_ratio": "1:1",
+            "extra_positive": item.get("style", ""),
+            "extra_negative": "",
+            "seed": "",
+            "_source_id": item.get("id", ""),
+            "_subject_key": item.get("subjectKey", ""),
+            "_result_index": item.get("resultIndex", 0),
+            "_category": item.get("category", ""),
+            "_target_crops": item.get("targetCrops", []),
+        })
+    return {"filename": filename, "prompts": prompts, "source": "json"}
 
 
 @app.post("/api/prompts/save")
@@ -309,7 +339,7 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
         if 'prompt_id' not in result:
             error_msg = result.get('node_errors', result.get('error', 'Unknown ComfyUI Error'))
             add_log(f"ComfyUI error for {desc} ({t}): {error_msg}", "error")
-            return False, make_result_entry(desc, t, prompt_text, final_positive, final_negative, width, height, status="error")
+            return False, make_result_entry(desc, t, prompt_text, final_positive, final_negative, width, height, status="error", row=row)
         prompt_id = result['prompt_id']
 
     # Dynamic timeout
@@ -356,14 +386,14 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
                 return True, make_result_entry(
                     desc, t, prompt_text, final_positive, final_negative, width, height,
                     url=f"/outputs/kemi/{t}/{file_name}", local_path=save_path,
-                    status="success", duration=duration
+                    status="success", duration=duration, row=row
                 )
         await asyncio.sleep(1)
 
     # Timeout
     duration = time.time() - start_time
     add_log(f"Timeout ({timeout_seconds}s) for {desc} ({t}) — skipping", "warning")
-    return False, make_result_entry(desc, t, prompt_text, final_positive, final_negative, width, height, status="timeout", duration=duration)
+    return False, make_result_entry(desc, t, prompt_text, final_positive, final_negative, width, height, status="timeout", duration=duration, row=row)
 
 
 # --- Batch Runner ---
@@ -466,6 +496,139 @@ async def start_batch(background_tasks: BackgroundTasks, req: StartBatchRequest)
         req.negative_prompt, req.global_aspect_ratio, req.batch_count, req.steps
     )
     return {"status": "started"}
+
+
+# --- Crop ---
+PROJECTS_DIR = os.path.join(BASE_DIR, "projects")
+
+@app.post("/api/crop")
+async def crop_images(project: str = "mbti"):
+    """생성된 1024x1024 이미지를 프로젝트 설정의 크롭 비율로 자동 크롭"""
+    project_path = os.path.join(PROJECTS_DIR, f"{project}.json")
+    if not os.path.exists(project_path):
+        return JSONResponse(status_code=404, content={"error": f"Project config not found: {project}"})
+
+    with open(project_path, "r", encoding="utf-8") as f:
+        project_config = json.load(f)
+
+    crops = project_config.get("crops", {})
+    if not crops:
+        return {"error": "No crops defined in project config"}
+
+    results = batch_status.get("results", [])
+    successful = [r for r in results if r.get("status") == "success" and r.get("local_path")]
+    if not successful:
+        return {"error": "No successful images to crop"}
+
+    cropped = []
+    try:
+        from PIL import Image
+
+        crop_output_dir = os.path.join(OUTPUT_DIR, "kemi", "cropped")
+        os.makedirs(crop_output_dir, exist_ok=True)
+
+        for result in successful:
+            src_path = result["local_path"]
+            if not os.path.exists(src_path):
+                continue
+
+            img = Image.open(src_path)
+            w, h = img.size
+            base_name = os.path.splitext(os.path.basename(src_path))[0]
+
+            result_crops = {}
+            # _target_crops가 있으면 해당 크롭만, 없으면 전체
+            target_crops = result.get("_target_crops") or list(crops.keys())
+
+            for crop_name in target_crops:
+                if crop_name not in crops:
+                    continue
+                spec = crops[crop_name]
+                tw, th = spec["width"], spec["height"]
+                target_ratio = tw / th
+
+                # 중앙 기준 크롭
+                current_ratio = w / h
+                if current_ratio > target_ratio:
+                    new_w = int(h * target_ratio)
+                    left = (w - new_w) // 2
+                    box = (left, 0, left + new_w, h)
+                else:
+                    new_h = int(w / target_ratio)
+                    top = (h - new_h) // 2
+                    box = (0, top, w, top + new_h)
+
+                cropped_img = img.crop(box).resize((tw, th), Image.LANCZOS)
+
+                out_name = f"{base_name}_{crop_name}.webp"
+                out_path = os.path.join(crop_output_dir, out_name)
+                cropped_img.save(out_path, "WEBP", quality=85)
+
+                result_crops[crop_name] = {
+                    "path": out_path,
+                    "url": f"/outputs/kemi/cropped/{out_name}",
+                    "width": tw,
+                    "height": th,
+                }
+
+            if result_crops:
+                result["_crops"] = result_crops
+                cropped.append({"name": result["name"], "crops": list(result_crops.keys())})
+
+        add_log(f"Cropped {len(cropped)} images into {sum(len(c['crops']) for c in cropped)} variants", "success")
+        return {"status": "success", "cropped": cropped}
+
+    except ImportError:
+        return JSONResponse(status_code=500, content={"error": "Pillow not installed. Run: pip install Pillow"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# --- Manifest ---
+@app.get("/api/manifest")
+async def get_manifest(project: str = "mbti"):
+    """생성+크롭 완료된 이미지 목록을 manifest.json 형태로 반환"""
+    results = batch_status.get("results", [])
+    successful = [r for r in results if r.get("status") == "success"]
+
+    items = []
+    for r in successful:
+        assets = []
+        crops = r.get("_crops", {})
+        for crop_name, crop_info in crops.items():
+            assets.append({
+                "cropType": crop_name,
+                "localPath": crop_info["path"],
+                "url": crop_info["url"],
+                "width": crop_info["width"],
+                "height": crop_info["height"],
+            })
+
+        items.append({
+            "contentId": r.get("_source_id", f"{r['name']}-{r['type']}"),
+            "subjectKey": r.get("_subject_key", ""),
+            "resultIndex": r.get("_result_index", 0),
+            "assetType": r.get("type", ""),
+            "name": r["name"],
+            "status": r.get("review_status", "pending"),
+            "originalPath": r.get("local_path", ""),
+            "originalUrl": r.get("url", ""),
+            "assets": assets,
+        })
+
+    manifest = {
+        "generatedAt": datetime.now().isoformat(),
+        "project": project,
+        "totalImages": len(items),
+        "items": items,
+    }
+
+    # 파일로도 저장
+    manifest_path = os.path.join(OUTPUT_DIR, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    return manifest
 
 
 # --- R2 Upload ---

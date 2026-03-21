@@ -1,0 +1,15 @@
+{
+  "name": "케미테스트",
+  "sourceDir": "D:/Projects/MBTI",
+  "promptsFile": "D:/Projects/MBTI/scripts/image-gen/output/prompts.json",
+  "crops": {
+    "tournament": { "width": 512, "height": 640, "ratio": "4:5" },
+    "thumbnail": { "width": 256, "height": 256, "ratio": "1:1" },
+    "feed-cover": { "width": 800, "height": 450, "ratio": "16:9" },
+    "result-card": { "width": 800, "height": 600, "ratio": "4:3" }
+  },
+  "generation": {
+    "aspectRatio": "1:1",
+    "style": "semi-realistic illustration, warm pastel tones, no text, no letters, clean background"
+  }
+}

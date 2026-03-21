@@ -1,0 +1,206 @@
+[
+  {
+    "id": "dogBreed-result-000",
+    "subjectKey": "dogBreed",
+    "resultIndex": 0,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "골든 리트리버",
+    "nameEn": "Golden Retriever",
+    "emoji": "🦮",
+    "description": "온순하고 가정적인 따뜻한 성향",
+    "prompt": "Golden Retriever, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-001",
+    "subjectKey": "dogBreed",
+    "resultIndex": 1,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "래브라도 리트리버",
+    "nameEn": "Labrador Retriever",
+    "emoji": "🐕",
+    "description": "사교적이고 누구와도 잘 어울리는 타입",
+    "prompt": "Labrador Retriever, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-002",
+    "subjectKey": "dogBreed",
+    "resultIndex": 2,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "푸들",
+    "nameEn": "Poodle",
+    "emoji": "🐩",
+    "description": "지적이고 우아함을 추구하는 세련된 성향",
+    "prompt": "Poodle, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-003",
+    "subjectKey": "dogBreed",
+    "resultIndex": 3,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "말티즈",
+    "nameEn": "Maltese",
+    "emoji": "🐶",
+    "description": "애교 넘치고 사랑받고 싶어하는 성향",
+    "prompt": "Maltese, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-004",
+    "subjectKey": "dogBreed",
+    "resultIndex": 4,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "시츄",
+    "nameEn": "Shih Tzu",
+    "emoji": "🐕",
+    "description": "온순하고 느긋한 평화주의자 타입",
+    "prompt": "Shih Tzu, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-005",
+    "subjectKey": "dogBreed",
+    "resultIndex": 5,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "포메라니안",
+    "nameEn": "Pomeranian",
+    "emoji": "🐕",
+    "description": "작지만 용감하고 자기 주장이 강한 타입",
+    "prompt": "Pomeranian, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-006",
+    "subjectKey": "dogBreed",
+    "resultIndex": 6,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "웰시코기",
+    "nameEn": "Welsh Corgi",
+    "emoji": "🐕",
+    "description": "에너지 넘치고 충성스러운 활동파 성향",
+    "prompt": "Welsh Corgi, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-007",
+    "subjectKey": "dogBreed",
+    "resultIndex": 7,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "프렌치 불독",
+    "nameEn": "French Bulldog",
+    "emoji": "🐕",
+    "description": "느긋하고 여유로운 도시형 성향",
+    "prompt": "French Bulldog, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-008",
+    "subjectKey": "dogBreed",
+    "resultIndex": 8,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "비글",
+    "nameEn": "Beagle",
+    "emoji": "🐕",
+    "description": "호기심 많고 탐구심 강한 모험가 성향",
+    "prompt": "Beagle, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-009",
+    "subjectKey": "dogBreed",
+    "resultIndex": 9,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "시바견",
+    "nameEn": "Shiba Inu",
+    "emoji": "🐕",
+    "description": "독립적이고 깔끔한 마이웨이 성향",
+    "prompt": "Shiba Inu, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-010",
+    "subjectKey": "dogBreed",
+    "resultIndex": 10,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "보더 콜리",
+    "nameEn": "Border Collie",
+    "emoji": "🐕",
+    "description": "지적이고 도전을 즐기는 열정적인 타입",
+    "prompt": "Border Collie, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  },
+  {
+    "id": "dogBreed-result-011",
+    "subjectKey": "dogBreed",
+    "resultIndex": 11,
+    "type": "breed-item",
+    "category": "breeds/dogs",
+    "name": "요크셔테리어",
+    "nameEn": "Yorkshire Terrier",
+    "emoji": "🐕",
+    "description": "용감하고 자신감 넘치는 당당한 성향",
+    "prompt": "Yorkshire Terrier, breed-accurate features, friendly expression, full body portrait, looking at camera",
+    "style": "semi-realistic illustration, warm pastel tones, soft fur texture, clean background, centered subject, no text, no letters, high quality",
+    "targetCrops": [
+      "tournament",
+      "thumbnail"
+    ]
+  }
+]
