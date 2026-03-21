@@ -39,12 +39,16 @@ const CONFIG = {
     MODALS: {
         CONFIRM: 'confirm-modal',
         MAPPING: 'mapping-modal',
-        HELP: 'help-modal'
+        HELP: 'help-modal',
+        IMAGE_DETAIL: 'image-detail-modal'
     },
     DOM: {
         START_BTN: 'start-batch-btn',
+        CANCEL_BTN: 'cancel-batch-btn',
         FAB_BTN: 'fab-generate',
         GALLERY: 'gallery-grid',
+        GALLERY_EMPTY: 'gallery-empty',
+        GALLERY_SUMMARY: 'gallery-summary',
         LOGS: 'log-container',
         PROMPT_FILE_SELECTOR: 'prompt-file-selector',
         SELECTION_COUNT: 'selection-count',
@@ -53,6 +57,10 @@ const CONFIG = {
         PROGRESS_TEXT: 'progress-percent',
         STATUS_TEXT: 'current-status',
         PREVIEW: 'live-preview-display',
+        WELCOME: 'welcome-state',
+        BATCH_STATE: 'batch-state',
+        TOAST: 'toast-container',
+        UPLOAD_BTN: 'r2-upload-btn',
         SETTINGS: {
             TOOLTIPS: 'setting-tooltips',
             STEPS: 'setting-steps',

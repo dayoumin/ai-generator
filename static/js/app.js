@@ -13,9 +13,11 @@ document.addEventListener('DOMContentLoaded', () => {
     initGalleryFilters();
     loadPromptFiles();
     loadAppConfig();
-    try { loadConfig(); } catch (e) { }
+    // loadConfig removed — was dead code (function never existed)
     checkComfyUIHealth();
     setInterval(checkComfyUIHealth, 30000);
+    // 페이지 로드 시 기존 배치 상태 복구
+    checkExistingBatch();
 });
 
 function initEventListeners() {
@@ -23,6 +25,11 @@ function initEventListeners() {
     Utils.el(CONFIG.DOM.START_BTN)?.addEventListener('click', openConfirmModal);
     Utils.el(CONFIG.DOM.FAB_BTN)?.addEventListener('click', openConfirmModal);
     Utils.el('r2-upload-btn')?.addEventListener('click', uploadToR2);
+    Utils.el('cancel-batch-btn')?.addEventListener('click', cancelBatch);
+    Utils.el('welcome-go-prompts')?.addEventListener('click', () => {
+        document.querySelector('[data-tab="prompts"]')?.click();
+    });
+    Utils.el('toggle-style-config')?.addEventListener('click', toggleStyleConfig);
     Utils.el('clear-logs-btn')?.addEventListener('click', () => {
         Utils.el(CONFIG.DOM.LOGS).innerHTML = '';
         AppState.lastLogCount = 0;
@@ -35,7 +42,7 @@ function initEventListeners() {
     Utils.el(CONFIG.DOM.PROMPT_FILE_SELECTOR)?.addEventListener('change', (e) => loadPromptContent(e.target.value));
 
     // Settings
-    Utils.el('save-settings-btn')?.addEventListener('click', () => { saveAppConfig(); alert('Settings Saved!'); });
+    Utils.el('save-settings-btn')?.addEventListener('click', () => { saveAppConfig(); showToast('설정이 저장되었습니다', 'success'); });
     Utils.el('clear-all-data-btn')?.addEventListener('click', () => {
         Utils.el(CONFIG.DOM.LOGS).innerHTML = '';
         Utils.el(CONFIG.DOM.GALLERY).innerHTML = '';
@@ -51,7 +58,7 @@ function initEventListeners() {
     Utils.el('close-mapping-btn')?.addEventListener('click', () => Utils.el(CONFIG.MODALS.MAPPING).style.display = 'none');
     Utils.el('copy-mapping-btn')?.addEventListener('click', () => {
         const textarea = Utils.el('mapping-json');
-        if (textarea) { navigator.clipboard.writeText(textarea.value); alert('Copied!'); }
+        if (textarea) { navigator.clipboard.writeText(textarea.value); showToast('클립보드에 복사되었습니다', 'success'); }
     });
     Utils.el('close-detail-btn')?.addEventListener('click', closeImageDetail);
     Utils.el('btn-approve')?.addEventListener('click', () => reviewCurrentImage('approved'));
@@ -115,6 +122,21 @@ async function checkComfyUIHealth() {
     }
 }
 
+// --- Check Existing Batch on Load ---
+async function checkExistingBatch() {
+    try {
+        const resp = await fetch(CONFIG.API.STATUS);
+        const data = await resp.json();
+        if (data.total > 0 || data.is_running || data.finish_status) {
+            updateUI(data);
+            if (data.is_running) {
+                setBusy(true);
+                pollStatus();
+            }
+        }
+    } catch (e) { /* server not ready yet */ }
+}
+
 // --- R2 Upload ---
 async function uploadToR2() {
     const btn = Utils.el('r2-upload-btn');
@@ -123,14 +145,20 @@ async function uploadToR2() {
         const resp = await fetch(CONFIG.API.UPLOAD_R2, { method: 'POST' });
         const data = await resp.json();
         if (data.error) {
-            alert('Upload failed: ' + data.error);
+            showToast('업로드 실패: ' + data.error, 'error');
         } else {
-            alert(`Upload complete! ${Object.keys(data.mappings || {}).length} files uploaded.`);
+            showToast(`업로드 완료! ${Object.keys(data.mappings || {}).length}개 파일`, 'success');
+            const textarea = Utils.el('mapping-json');
+            const modal = Utils.el(CONFIG.MODALS.MAPPING);
+            if (textarea && modal) {
+                textarea.value = JSON.stringify(data.mappings, null, 2);
+                modal.style.display = 'flex';
+            }
         }
     } catch (e) {
-        alert('Upload failed: ' + e.message);
+        showToast('업로드 실패: ' + e.message, 'error');
     } finally {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="cloud-upload"></i> Upload to R2'; }
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="cloud-upload"></i> 클라우드 업로드'; }
         lucide.createIcons();
     }
 }
@@ -218,6 +246,7 @@ async function loadPromptFiles() {
         const resp = await fetch(CONFIG.API.PROMPT_FILES);
         const data = await resp.json();
         const select = document.getElementById(CONFIG.DOM.PROMPT_FILE_SELECTOR);
+        if (!select || !data.files) return;
         select.innerHTML = '';
         data.files.forEach(f => {
             const opt = document.createElement('option');
@@ -262,9 +291,10 @@ function renderPromptTable(prompts) {
 function updateSelectionCounts() {
     const checked = document.querySelectorAll('.prompt-checkbox:checked').length;
     const selEl = document.getElementById(CONFIG.DOM.SELECTION_COUNT);
-    if (selEl) selEl.innerText = `${checked} Selected`;
+    if (selEl) selEl.innerText = `${checked}개 선택됨`;
     const btn = document.getElementById(CONFIG.DOM.FAB_BTN);
-    if (btn) btn.innerText = `Generate Selected (${checked})`;
+    if (btn) btn.innerHTML = `<i data-lucide="play"></i> 선택 항목 생성 (${checked})`;
+    lucide.createIcons();
 }
 
 function toggleAllPrompts(source) {
@@ -278,17 +308,16 @@ function toggleCustomPromptForm() {
 }
 
 function clearPromptList() {
-    if (confirm("전체 리스트를 삭제하시겠습니까?")) {
-        AppState.currentPrompts = [];
-        renderPromptTable(AppState.currentPrompts);
-    }
+    AppState.currentPrompts = [];
+    renderPromptTable(AppState.currentPrompts);
+    showToast("프롬프트 목록이 초기화되었습니다", "success");
 }
 
 function addCustomPrompt() {
     const desc = document.getElementById('custom-desc').value.trim();
     const promptText = document.getElementById('custom-prompt').value.trim();
     const ar = document.getElementById('custom-ar').value;
-    if (!desc || !promptText) { alert("Please enter both Description and Prompt"); return; }
+    if (!desc || !promptText) { showToast("설명과 프롬프트를 모두 입력하세요", "error"); return; }
     AppState.currentPrompts.unshift({ desc_ko: desc, prompt: promptText, aspect_ratio: ar, is_manual: true });
     renderPromptTable(AppState.currentPrompts);
     document.getElementById('custom-desc').value = '';
@@ -309,15 +338,15 @@ function applyPreset() {
 // --- Batch Control ---
 function openConfirmModal() {
     const checked = document.querySelectorAll('.prompt-checkbox:checked').length;
-    if (checked === 0) return alert("Please select at least one prompt!");
+    if (checked === 0) return showToast("프롬프트를 1개 이상 선택하세요", "error");
     const repeat = parseInt(document.getElementById('batch-count').value) || 1;
     const total = checked * 2 * repeat;
-    const timeEst = Math.ceil(total * 12 / 60); // ~12s per image average
+    const timeEst = Math.ceil(total * 12 / 60);
     const modal = document.getElementById(CONFIG.MODALS.CONFIRM);
     const p = modal.querySelector('p');
-    if (p) p.innerHTML = `Generate <strong>${total} images</strong>?<br><span style="font-size:0.9em; opacity:0.8">(${checked} prompts x ${repeat} variations x 2 sizes)</span>`;
+    if (p) p.innerHTML = `<strong>${total}장</strong>의 이미지를 생성합니다<br><span style="font-size:0.9em; opacity:0.8">(${checked}개 프롬프트 x ${repeat} 변형 x 2 크기)</span>`;
     const sub = modal.querySelector('.sub-text');
-    if (sub) sub.innerText = `Estimated time: ~${timeEst} minutes`;
+    if (sub) sub.innerText = `예상 소요 시간: 약 ${timeEst}분`;
     modal.style.display = 'flex';
 }
 
@@ -351,7 +380,7 @@ async function confirmStartBatch() {
         });
         pollStatus();
     } catch (e) {
-        alert("Failed to start: " + e.message);
+        showToast("생성 시작 실패: " + e.message, "error");
         setBusy(false);
     }
 }
@@ -361,47 +390,71 @@ function setBusy(isBusy) {
     const fabBtn = Utils.el(CONFIG.DOM.FAB_BTN);
     if (startBtn) {
         startBtn.disabled = isBusy;
-        startBtn.innerHTML = isBusy ? '<i class="spinner"></i> Generating...' : '<i data-lucide="play"></i> Start Batch';
+        startBtn.innerHTML = isBusy ? '<i class="spinner"></i> 생성 중...' : '<i data-lucide="play"></i> 이미지 생성';
     }
     if (fabBtn) {
         fabBtn.disabled = isBusy;
-        fabBtn.innerHTML = isBusy ? '<i class="spinner"></i> Generating...' : '<i data-lucide="play"></i> Generate Selected';
+        fabBtn.innerHTML = isBusy ? '<i class="spinner"></i> 생성 중...' : '<i data-lucide="play"></i> 선택 항목 생성';
     }
     if (!isBusy) lucide.createIcons();
 }
 
 // --- Status Polling ---
 async function pollStatus() {
+    let errorCount = 0;
     const interval = setInterval(async () => {
         try {
             const resp = await fetch(CONFIG.API.STATUS);
             const data = await resp.json();
+            errorCount = 0;
             updateUI(data);
 
             if (!data.is_running && data.finish_status) {
                 clearInterval(interval);
                 setBusy(false);
                 const statusEl = Utils.el(CONFIG.DOM.STATUS_TEXT);
+                if (!statusEl) return;
                 if (data.finish_status === "success") {
-                    statusEl.innerHTML = `<span style="color:var(--accent)">Completed — ${data.succeeded}/${data.total} succeeded</span>`;
+                    statusEl.innerHTML = `<span style="color:var(--accent)">완료 — ${data.succeeded}/${data.total}장 성공</span>`;
                 } else if (data.finish_status === "partial") {
-                    statusEl.innerHTML = `<span style="color:#f59e0b">Completed — ${data.succeeded}/${data.total} succeeded (${data.warnings} warning)</span>`;
+                    statusEl.innerHTML = `<span style="color:#f59e0b">완료 — ${data.succeeded}/${data.total}장 (경고 ${data.warnings}건)</span>`;
                 } else if (data.finish_status === "cancelled") {
-                    statusEl.innerHTML = `<span style="color:var(--text-muted)">Cancelled — ${data.succeeded}/${data.total} completed</span>`;
+                    statusEl.innerHTML = `<span style="color:var(--text-muted)">중지됨 — ${data.succeeded}/${data.total}장 완료</span>`;
                 } else if (data.finish_status === "error") {
-                    statusEl.innerHTML = `<span style="color:var(--danger)">Error — ${data.succeeded}/${data.total} succeeded (${data.errors} error)</span>`;
+                    statusEl.innerHTML = `<span style="color:var(--danger)">오류 — ${data.succeeded}/${data.total}장 (오류 ${data.errors}건)</span>`;
                 }
                 if (data.finish_status !== "error" && Utils.isChecked(CONFIG.DOM.SETTINGS.SOUND)) {
                     playNotificationSound();
                 }
             }
-        } catch (e) { console.error("Poll Error:", e); }
+        } catch (e) {
+            errorCount++;
+            if (errorCount >= 30) {
+                clearInterval(interval);
+                setBusy(false);
+                showToast("서버 연결이 끊어졌습니다", "error");
+            }
+        }
     }, 1000);
 }
 
 // --- UI Update ---
 function updateUI(data) {
     AppState.lastStatusData = data;
+
+    // Welcome → Batch state transition
+    const welcomeEl = Utils.el('welcome-state');
+    const batchEl = Utils.el('batch-state');
+    if (welcomeEl && batchEl) {
+        if (data.total > 0 || data.is_running || data.finish_status) {
+            welcomeEl.style.display = 'none';
+            batchEl.style.display = '';
+        }
+    }
+
+    // Cancel button visibility
+    const cancelBtn = Utils.el('cancel-batch-btn');
+    if (cancelBtn) cancelBtn.style.display = data.is_running ? '' : 'none';
 
     // Stats
     const totalEl = Utils.el(CONFIG.DOM.TOTAL_TASKS);
@@ -475,6 +528,8 @@ function updateUI(data) {
         });
         AppState.lastResultCount = data.results.length;
 
+        updateGalleryCounts();
+
         // Live preview - show latest successful image from new items only
         const lastSuccess = [...newItems].reverse().find(r => r.url);
         if (lastSuccess) {
@@ -491,9 +546,10 @@ function initGalleryFilters() {
             document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             const filter = btn.dataset.filter;
-            document.querySelectorAll('.gallery-item').forEach(item => {
-                item.style.display = (filter === 'all' || item.classList.contains(filter)) ? '' : 'none';
-            });
+            const grid = Utils.el(CONFIG.DOM.GALLERY);
+            if (!grid) return;
+            // CSS 클래스 기반 필터링 (600개 inline style 대신 1번 클래스 변경)
+            grid.className = 'gallery-grid' + (filter !== 'all' ? ` filter-${filter}` : '');
         });
     });
 }
@@ -558,6 +614,7 @@ async function reviewCurrentImage(status) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status })
         });
+        showToast(status === 'approved' ? '승인됨' : '거부됨', status === 'approved' ? 'success' : 'error');
         // Update local display
         const badge = document.querySelector(`#image-detail-modal .review-badge`);
         if (badge) {
@@ -578,3 +635,76 @@ async function reviewCurrentImage(status) {
 }
 
 function getStatusData() { return AppState.lastStatusData; }
+
+// --- Toast Notification ---
+function showToast(message, type = 'info') {
+    const container = Utils.el('toast-container');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => toast.classList.add('show'), 10);
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    }, 2000);
+}
+
+// --- Cancel Batch ---
+async function cancelBatch() {
+    try {
+        await fetch(CONFIG.API.CANCEL_BATCH, { method: 'POST' });
+        showToast('생성 중지 요청됨', 'warning');
+    } catch (e) { console.error('Cancel failed:', e); }
+}
+
+// --- Style Config Toggle ---
+function toggleStyleConfig() {
+    const panel = Utils.el('style-config-panel');
+    if (!panel) return;
+    panel.classList.toggle('collapsed');
+    const icon = panel.querySelector('.collapse-icon');
+    if (icon) {
+        icon.setAttribute('data-lucide', panel.classList.contains('collapsed') ? 'chevron-right' : 'chevron-down');
+        lucide.createIcons();
+    }
+}
+
+// --- Gallery Counts ---
+function updateGalleryCounts() {
+    const grid = Utils.el(CONFIG.DOM.GALLERY);
+    if (!grid) return;
+    const items = grid.querySelectorAll('.gallery-item');
+    const all = items.length;
+    let thumb = 0, hero = 0, failed = 0;
+    items.forEach(item => {
+        if (item.classList.contains('thumb')) thumb++;
+        if (item.classList.contains('hero')) hero++;
+        if (item.classList.contains('timeout') || item.classList.contains('error')) failed++;
+    });
+
+    const setCount = (id, n) => { const el = Utils.el(id); if (el) el.textContent = n; };
+    setCount('count-all', all);
+    setCount('count-thumb', thumb);
+    setCount('count-hero', hero);
+    setCount('count-failed', failed);
+
+    // Empty state
+    const emptyEl = Utils.el('gallery-empty');
+    const gridEl = Utils.el(CONFIG.DOM.GALLERY);
+    if (emptyEl) emptyEl.style.display = all > 0 ? 'none' : 'flex';
+    if (gridEl) gridEl.style.display = all > 0 ? '' : 'none';
+
+    // Summary
+    const summary = Utils.el('gallery-summary');
+    if (summary && all > 0) {
+        const approved = grid.querySelectorAll('.review-badge.approved').length;
+        const rejected = grid.querySelectorAll('.review-badge.rejected').length;
+        summary.textContent = `${all}장 | 승인 ${approved} | 거부 ${rejected}`;
+    }
+
+    // Show upload button only if images exist
+    const uploadBtn = Utils.el('r2-upload-btn');
+    if (uploadBtn) uploadBtn.style.display = all > 0 ? '' : 'none';
+}

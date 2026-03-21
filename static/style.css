@@ -341,7 +341,7 @@ td {
 /* Gallery */
 .gallery-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 16px;
 }
 
@@ -473,7 +473,7 @@ textarea {
     }
 }
 /* Prompt Manager Styles */
-.prompt-controls { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; background: rgba(255, 255, 255, 0.05); padding: 16px; border-radius: 12px; } .file-selector { flex: 1; background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); padding: 10px; border-radius: 8px; font-size: 1rem; } .table-container td input[type='checkbox'] { width: 18px; height: 18px; accent-color: var(--primary); } .table-container td.checkbox-cell { width: 40px; text-align: center; } .batch-floating-actions { position: fixed; bottom: 30px; right: 30px; display: flex; gap: 12px; z-index: 100; } .fab { padding: 16px 32px; border-radius: 30px; font-size: 1rem; font-weight: 600; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: flex; align-items: center; gap: 8px; border: none; cursor: pointer; transition: transform 0.2s; } .fab:hover { transform: translateY(-4px); box-shadow: 0 14px 40px rgba(0,0,0,0.6); } .fab-primary { background: var(--primary); color: white; } .fab-secondary { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); }
+.prompt-controls { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; background: rgba(255, 255, 255, 0.05); padding: 16px; border-radius: 12px; } .file-selector { flex: 1; background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); padding: 10px; border-radius: 8px; font-size: 1rem; } .table-container td input[type='checkbox'] { width: 18px; height: 18px; accent-color: var(--primary); } .table-container td.checkbox-cell { width: 40px; text-align: center; } .batch-floating-actions { position: fixed; bottom: 30px; right: 30px; display: flex; gap: 12px; z-index: 100; } .fab { padding: 16px 32px; border-radius: 30px; font-size: 1rem; font-weight: 600; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: flex; align-items: center; gap: 8px; border: none; cursor: pointer; transition: transform 0.2s; } .fab:hover { transform: translateY(-4px); box-shadow: 0 14px 40px rgba(0,0,0,0.6); } .fab-primary { background: var(--primary); color: white; } .fab-secondary { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); }
 
 /* Style Config Panel */
 .style-config { background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 24px; } .config-row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; } .config-group { display: flex; flex-direction: column; gap: 8px; } .config-group label { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text-muted); font-size: 0.9rem; } .config-group textarea { width: 100%; height: 80px; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; color: var(--text-main); font-family: inherit; font-size: 0.95rem; resize: vertical; transition: border-color 0.2s; } .config-group textarea:focus { border-color: var(--primary); outline: none; }
@@ -503,6 +503,20 @@ textarea {
 .setting-item { display: flex; justify-content: space-between; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--border); }
 .setting-item label { font-weight: 500; }
 .setting-desc { font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; }
+.input-tiny { width: 80px; padding: 6px 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; font-size: 0.9rem; }
+
+/* Toggle Switch */
+.switch { position: relative; display: inline-block; width: 48px; height: 26px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.15); transition: 0.3s; }
+.slider:before { content: ""; position: absolute; height: 20px; width: 20px; left: 3px; bottom: 3px; background: #fff; transition: 0.3s; }
+input:checked + .slider { background: var(--primary); }
+input:checked + .slider:before { transform: translateX(22px); }
+.slider.round { border-radius: 26px; }
+.slider.round:before { border-radius: 50%; }
+
+/* Green dot for health indicator */
+.dot.green { background: var(--accent); }
 
 body:not(.tooltips-enabled) [data-tooltip] { cursor: default; }
 body:not(.tooltips-enabled) [data-tooltip]::after { display: none; }
@@ -564,6 +578,8 @@ body:not(.tooltips-enabled) [data-tooltip]::after { display: none; }
 .btn-danger:hover { background: #dc2626; }
 .btn-icon { background: transparent; border: 1px solid var(--border); padding: 6px 8px; min-width: auto; }
 .btn-icon:hover { background: rgba(255,255,255,0.1); }
+.close-btn { background: transparent; border: none; color: var(--text-muted); font-size: 1.5rem; cursor: pointer; padding: 0 4px; line-height: 1; }
+.close-btn:hover { color: var(--text-main); }
 
 /* --- Status badge in gallery --- */
 .badge.thumb { background: rgba(99,102,241,0.2); color: #818cf8; }
@@ -574,6 +590,66 @@ body:not(.tooltips-enabled) [data-tooltip]::after { display: none; }
 
 /* --- Status indicator red dot --- */
 .dot.red { background: var(--danger); }
+
+/* --- Welcome State --- */
+.welcome-state {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 60vh; text-align: center; gap: 16px;
+}
+.welcome-icon { font-size: 3rem; color: var(--primary); opacity: 0.7; }
+.welcome-icon i { width: 64px; height: 64px; }
+.welcome-state h2 { font-size: 1.5rem; font-weight: 700; }
+.welcome-state p { color: var(--text-muted); font-size: 0.95rem; max-width: 400px; }
+.btn-lg { padding: 14px 28px; font-size: 1rem; }
+
+/* --- Empty State --- */
+.empty-state {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 300px; color: var(--text-muted); gap: 8px;
+}
+.empty-state i { width: 48px; height: 48px; opacity: 0.4; }
+.empty-hint { font-size: 0.8rem; opacity: 0.6; }
+
+/* --- Toast --- */
+#toast-container {
+    position: fixed; top: 20px; right: 20px; z-index: 10000;
+    display: flex; flex-direction: column; gap: 8px;
+}
+.toast {
+    padding: 10px 20px; border-radius: 8px; font-size: 0.85rem; font-weight: 500;
+    color: #fff; opacity: 0; transform: translateX(100px);
+    transition: all 0.3s ease;
+}
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast-success { background: var(--accent); }
+.toast-error { background: var(--danger); }
+.toast-warning { background: #f59e0b; }
+.toast-info { background: var(--primary); }
+
+/* --- Collapsible Style Config --- */
+.style-config.collapsed .config-row { display: none; }
+.style-config.collapsed .config-actions { display: none; }
+.collapse-icon { width: 16px; height: 16px; vertical-align: middle; transition: transform 0.2s; }
+
+/* --- Gallery Header --- */
+.gallery-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+.gallery-summary { font-size: 0.8rem; color: var(--text-muted); }
+.filter-count { font-size: 0.7rem; opacity: 0.6; margin-left: 2px; }
+
+/* Gallery Filters */
+.gallery-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.filter-btn {
+    padding: 6px 14px; border-radius: 8px; font-size: 0.8rem; font-weight: 500;
+    background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted);
+    cursor: pointer; transition: all 0.15s;
+}
+.filter-btn:hover { background: rgba(99,102,241,0.1); color: var(--text-main); }
+.filter-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* CSS-based gallery filtering (no inline styles needed) */
+.gallery-grid.filter-thumb .gallery-item:not(.thumb) { display: none; }
+.gallery-grid.filter-hero .gallery-item:not(.hero) { display: none; }
+.gallery-grid.filter-failed .gallery-item:not(.timeout):not(.error) { display: none; }
 
 /* --- Guide Page --- */
 .guide-container { max-width: 900px; margin: 0 auto; padding: 0 16px; }

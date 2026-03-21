@@ -156,6 +156,7 @@ async def get_prompt_content(filename: str = "thumbnail-prompts.csv"):
         df = pd.read_csv(path)
         if 'desc_ko' not in df.columns or 'prompt' not in df.columns:
             return {"error": "Invalid CSV format (Missing desc_ko or prompt columns)", "prompts": []}
+        df = df.fillna('')
         prompts = df.to_dict(orient="records")
         for i, p in enumerate(prompts):
             p['id'] = i
@@ -340,7 +341,7 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
                 img_url = f"http://{COMFYUI_SERVER_ADDRESS}/view?filename={img_info['filename']}&subfolder={img_info['subfolder']}&type={img_info['type']}"
                 sub_dir = os.path.join(OUTPUT_DIR, "kemi", t)
                 os.makedirs(sub_dir, exist_ok=True)
-                safe_name = prompt_text.replace(' ', '_')[:50]
+                safe_name = re.sub(r'[<>:"/\\|?*]', '', prompt_text).replace(' ', '_')[:50]
                 short_id = str(uuid.uuid4())[:8]
                 file_name = f"{safe_name}_{t}_{short_id}.png"
                 save_path = os.path.join(sub_dir, file_name)

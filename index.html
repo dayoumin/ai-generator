@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kemi AI Studio | Batch Generator</title>
+    <title>Kemi AI Studio</title>
     <link rel="stylesheet" href="/static/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
         rel="stylesheet">
@@ -22,19 +22,19 @@
             </div>
             <nav class="nav-menu">
                 <a href="#" class="nav-item active" data-tab="dashboard">
-                    <i data-lucide="layout-dashboard"></i> Dashboard
+                    <i data-lucide="layout-dashboard"></i> 대시보드
                 </a>
                 <a href="#" class="nav-item" data-tab="prompts">
-                    <i data-lucide="file-text"></i> Prompt List
+                    <i data-lucide="file-text"></i> 프롬프트
                 </a>
                 <a href="#" class="nav-item" data-tab="outputs">
-                    <i data-lucide="image"></i> Gallery
+                    <i data-lucide="image"></i> 갤러리
                 </a>
                 <a href="#" class="nav-item" data-tab="settings">
-                    <i data-lucide="settings"></i> Settings
+                    <i data-lucide="settings"></i> 설정
                 </a>
                 <a href="#" class="nav-item" data-tab="guide">
-                    <i data-lucide="book-open"></i> Guide
+                    <i data-lucide="book-open"></i> 가이드
                 </a>
             </nav>
             <div class="sidebar-footer">
@@ -47,13 +47,16 @@
 
         <main class="main-content">
             <header class="top-bar">
-                <div class="breadcrumb">Project: AI_Generator / <span>Kemi Batch</span></div>
-                <div class="actions">
-                    <button class="btn btn-secondary" id="r2-upload-btn">
-                        <i data-lucide="cloud-upload"></i> Upload to R2
+                <div class="breadcrumb">Kemi <span>Studio</span></div>
+                <div class="actions" id="top-actions">
+                    <button class="btn btn-danger" id="cancel-batch-btn" style="display:none;">
+                        <i data-lucide="square"></i> 생성 중지
+                    </button>
+                    <button class="btn btn-secondary" id="r2-upload-btn" style="display:none;">
+                        <i data-lucide="cloud-upload"></i> 클라우드 업로드
                     </button>
                     <button class="btn btn-primary" id="start-batch-btn">
-                        <i data-lucide="play"></i> Start Batch
+                        <i data-lucide="play"></i> 이미지 생성
                     </button>
                 </div>
             </header>
@@ -61,44 +64,57 @@
             <div class="content-area">
                 <!-- Dashboard Tab -->
                 <section id="dashboard-tab" class="tab-content active">
-                    <div class="hero-stats">
-                        <div class="stat-card">
-                            <label>Total Tasks</label>
-                            <span id="total-count">0 / 108</span>
-                        </div>
-                        <div class="stat-card">
-                            <label>Progress</label>
-                            <div class="progress-info">
-                                <span id="progress-percent">0%</span>
-                                <div class="progress-bar-container">
-                                    <div class="progress-bar" id="main-progress-bar"></div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="stat-card">
-                            <label>Current Status</label>
-                            <span id="current-status" class="status-text">Idle</span>
-                        </div>
+                    <!-- 웰컴 상태 (배치 실행 전) -->
+                    <div id="welcome-state" class="welcome-state">
+                        <div class="welcome-icon"><i data-lucide="image-plus"></i></div>
+                        <h2>이미지 생성을 시작하세요</h2>
+                        <p>프롬프트 탭에서 이미지 목록을 불러오고, 스타일을 설정한 후 생성하세요.</p>
+                        <button class="btn btn-primary btn-lg" id="welcome-go-prompts">
+                            <i data-lucide="arrow-right"></i> 프롬프트 탭으로 이동
+                        </button>
                     </div>
 
-                    <div class="grid-layout">
-                        <div class="log-panel">
-                            <div class="panel-header">
-                                <h3>Execution Logs</h3>
-                                <button class="btn-icon" id="clear-logs-btn"><i data-lucide="trash-2"></i></button>
+                    <!-- 진행 상태 (배치 실행 중/후) -->
+                    <div id="batch-state" style="display:none;">
+                        <div class="hero-stats">
+                            <div class="stat-card">
+                                <label>전체 작업</label>
+                                <span id="total-count">0 / 0</span>
                             </div>
-                            <div class="log-container" id="log-container">
-                                <div class="log-entry system">System initialized. Waiting for task...</div>
+                            <div class="stat-card">
+                                <label>진행률</label>
+                                <div class="progress-info">
+                                    <span id="progress-percent">0%</span>
+                                    <div class="progress-bar-container">
+                                        <div class="progress-bar" id="main-progress-bar"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <label>현재 상태</label>
+                                <span id="current-status" class="status-text">대기 중</span>
                             </div>
                         </div>
-                        <div class="live-preview">
-                            <div class="panel-header">
-                                <h3>Live Preview</h3>
+
+                        <div class="grid-layout">
+                            <div class="log-panel">
+                                <div class="panel-header">
+                                    <h3>활동 로그</h3>
+                                    <button class="btn-icon" id="clear-logs-btn"><i data-lucide="trash-2"></i></button>
+                                </div>
+                                <div class="log-container" id="log-container">
+                                    <div class="log-entry system">시스템 준비 완료. 작업을 기다리는 중...</div>
+                                </div>
                             </div>
-                            <div class="preview-display" id="live-preview-display">
-                                <div class="preview-placeholder">
-                                    <i data-lucide="camera"></i>
-                                    <p>Images will appear here in real-time</p>
+                            <div class="live-preview">
+                                <div class="panel-header">
+                                    <h3>실시간 미리보기</h3>
+                                </div>
+                                <div class="preview-display" id="live-preview-display">
+                                    <div class="preview-placeholder">
+                                        <i data-lucide="camera"></i>
+                                        <p>생성된 이미지가 여기에 표시됩니다</p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -109,9 +125,9 @@
                 <section id="prompts-tab" class="tab-content">
                     <div class="panel">
                         <div class="panel-header">
-                            <h3>Prompt Library</h3>
+                            <h3>프롬프트 목록</h3>
                             <div class="selection-info">
-                                <span id="selection-count">0 Selected</span>
+                                <span id="selection-count">0개 선택됨</span>
                             </div>
                         </div>
 
@@ -119,18 +135,18 @@
                             <div class="control-group">
                                 <i data-lucide="file-spreadsheet"></i>
                                 <select id="prompt-file-selector" class="file-selector">
-                                    <option>Loading...</option>
+                                    <option>불러오는 중...</option>
                                 </select>
-                                <button class="btn btn-icon" id="open-help-btn" title="CSV Guide">
+                                <button class="btn btn-icon" id="open-help-btn" title="CSV 가이드">
                                     <i data-lucide="help-circle"></i>
                                 </button>
                             </div>
                             <div class="action-group">
-                                <button class="btn btn-danger" id="clear-prompts-btn" title="Clear current list">
-                                    <i data-lucide="trash"></i> Clear
+                                <button class="btn btn-danger" id="clear-prompts-btn" title="목록 초기화">
+                                    <i data-lucide="trash"></i> 초기화
                                 </button>
                                 <button class="btn btn-secondary" id="toggle-custom-form-btn">
-                                    <i data-lucide="plus"></i> Add Custom
+                                    <i data-lucide="plus"></i> 직접 추가
                                 </button>
                             </div>
                         </div>
@@ -155,10 +171,10 @@
                             </div>
                         </div>
 
-                        <!-- Style Configuration -->
-                        <div class="style-config" id="style-config-panel">
-                            <div class="config-header">
-                                <span>Style Configuration</span>
+                        <!-- Style Configuration (접기/펼치기) -->
+                        <div class="style-config collapsed" id="style-config-panel">
+                            <div class="config-header" id="toggle-style-config" style="cursor:pointer;">
+                                <span><i data-lucide="chevron-right" class="collapse-icon"></i> 스타일 및 품질 설정</span>
                                 <div class="config-actions">
                                     <select id="default-ar" class="preset-selector" title="Default Aspect Ratio"
                                         data-tooltip="Default Aspect Ratio for all prompts">
@@ -183,12 +199,12 @@
                             </div>
                             <div class="config-row">
                                 <div class="config-group">
-                                    <label><i data-lucide="palette"></i> Global Style Prompt</label>
+                                    <label><i data-lucide="palette"></i> 스타일 프롬프트</label>
                                     <textarea id="style-prompt"
                                         rows="2">cute kawaii flat illustration, bright pastel colors, soft rounded shapes</textarea>
                                 </div>
                                 <div class="config-group">
-                                    <label><i data-lucide="ban"></i> Negative Prompt</label>
+                                    <label><i data-lucide="ban"></i> 제외할 내용</label>
                                     <textarea id="negative-prompt"
                                         rows="2">text, watermark, ugly, blurry, nsfw, dark, scary, realistic photo</textarea>
                                 </div>
@@ -196,14 +212,14 @@
                             <div class="config-row"
                                 style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 16px;">
                                 <div class="config-group">
-                                    <label data-tooltip="Generate multiple versions of the same prompt"><i
-                                            data-lucide="repeat"></i> Repeat per Prompt (Variations)</label>
+                                    <label data-tooltip="같은 프롬프트로 여러 버전 생성"><i
+                                            data-lucide="repeat"></i> 변형 수 (프롬프트당)</label>
                                     <input type="number" id="batch-count" value="1" min="1" max="10"
                                         style="padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); color: var(--text-main); border-radius: 8px;">
                                 </div>
                                 <div class="config-group">
-                                    <label data-tooltip="Higher = More Detail (Slower); Lower = Draft (Faster)"><i
-                                            data-lucide="layers"></i> Quality Steps: <span id="steps-val"
+                                    <label data-tooltip="높을수록 고품질 (느림), 낮을수록 초안 (빠름)"><i
+                                            data-lucide="layers"></i> 이미지 품질: <span id="steps-val"
                                             style="color:var(--primary)">20</span></label>
                                     <input type="range" id="steps" min="4" max="50" value="20"
                                         style="width:100%; margin-top:8px;">
@@ -231,13 +247,21 @@
                     </div>
                 </section>
 
-                <!-- Outputs Tab -->
-                <section id="outputs-tab" class="tab-content" data-tooltip="View generated results">
-                    <div class="gallery-filters">
-                        <button class="filter-btn active" data-filter="all">All</button>
-                        <button class="filter-btn" data-filter="thumb">Thumbnails</button>
-                        <button class="filter-btn" data-filter="hero">Hero Images</button>
-                        <button class="filter-btn" data-filter="timeout">Failed/Timeout</button>
+                <!-- Gallery Tab -->
+                <section id="outputs-tab" class="tab-content">
+                    <div class="gallery-header">
+                        <div class="gallery-filters">
+                            <button class="filter-btn active" data-filter="all">전체 <span class="filter-count" id="count-all">0</span></button>
+                            <button class="filter-btn" data-filter="thumb">썸네일 <span class="filter-count" id="count-thumb">0</span></button>
+                            <button class="filter-btn" data-filter="hero">히어로 <span class="filter-count" id="count-hero">0</span></button>
+                            <button class="filter-btn" data-filter="failed">실패 <span class="filter-count" id="count-failed">0</span></button>
+                        </div>
+                        <div class="gallery-summary" id="gallery-summary"></div>
+                    </div>
+                    <div id="gallery-empty" class="empty-state">
+                        <i data-lucide="image-off"></i>
+                        <p>아직 생성된 이미지가 없습니다</p>
+                        <p class="empty-hint">프롬프트 탭에서 이미지를 생성하세요</p>
                     </div>
                     <div class="gallery-grid" id="gallery-grid">
                         <!-- Dynamic content -->
@@ -248,7 +272,7 @@
                 <section id="settings-tab" class="tab-content">
                     <div class="panel">
                         <div class="panel-header">
-                            <h3><i data-lucide="settings"></i> Application Settings</h3>
+                            <h3><i data-lucide="settings"></i> 앱 설정</h3>
                         </div>
                         <div class="settings-form">
                             <div class="setting-item">
@@ -512,24 +536,27 @@
 
                 <div class="batch-floating-actions" id="prompt-actions">
                     <button class="fab fab-primary" id="fab-generate">
-                        <i data-lucide="play"></i> Generate Selected
+                        <i data-lucide="play"></i> 선택 항목 생성
                     </button>
                 </div>
             </div>
         </main>
     </div>
 
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
     <!-- Modals -->
     <div id="confirm-modal" class="modal">
         <div class="modal-content small">
             <header>
-                <h3>Start Batch Generation?</h3>
+                <h3>이미지 생성을 시작할까요?</h3>
             </header>
-            <p>This will generate <strong>108 images</strong> using RTX 5080.</p>
-            <p class="sub-text">Estimated time: ~10 minutes</p>
+            <p></p>
+            <p class="sub-text"></p>
             <div class="modal-actions">
-                <button class="btn btn-secondary" id="cancel-confirm-btn">Cancel</button>
-                <button class="btn btn-primary" id="start-now-btn">Yes, Start Now</button>
+                <button class="btn btn-secondary" id="cancel-confirm-btn">취소</button>
+                <button class="btn btn-primary" id="start-now-btn">생성 시작</button>
             </div>
         </div>
     </div>
@@ -606,17 +633,17 @@ Cute Cat,Cute cat sitting on a rug,1:1</pre>
                 <div class="detail-info">
                     <div class="detail-meta" id="detail-meta"></div>
                     <div class="detail-prompt">
-                        <label>Positive Prompt</label>
+                        <label>프롬프트</label>
                         <code id="detail-prompt-text" class="prompt-display"></code>
                     </div>
                     <div class="detail-prompt">
-                        <label>Negative Prompt</label>
+                        <label>제외 항목</label>
                         <code id="detail-negative-text" class="prompt-display negative"></code>
                     </div>
                     <div class="detail-actions">
-                        <button class="btn btn-success" id="btn-approve">Approve (A)</button>
-                        <button class="btn btn-danger" id="btn-reject">Reject (R)</button>
-                        <span style="opacity:0.5; font-size:0.8rem; margin-left:8px;">Arrow keys to navigate</span>
+                        <button class="btn btn-success" id="btn-approve">승인 (A)</button>
+                        <button class="btn btn-danger" id="btn-reject">거부 (R)</button>
+                        <span style="opacity:0.5; font-size:0.8rem; margin-left:8px;">좌우 화살표로 이동</span>
                     </div>
                 </div>
             </div>
