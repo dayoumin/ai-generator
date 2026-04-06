@@ -564,10 +564,14 @@ async def crop_images(project: str = "mbti"):
                 out_path = os.path.join(crop_output_dir, out_name)
                 cropped_img.save(out_path, "WEBP", quality=85)
 
-                # R2 키 생성: _category(breeds/dogs) + 결과명 기반
+                # R2 키 생성: _category + 영어 프롬프트 기반 (한국어 금지 — MBTI 프록시가 ASCII만 허용)
                 category = result.get("_category", "misc")
-                safe_result_name = re.sub(r'[<>:"/\\|?*\s]', '-', result.get("name", "unknown")).lower().strip('-')
-                r2_key = f"{category}/{safe_result_name}_{crop_name}.webp"
+                # 프롬프트 첫 부분(영어 breed명)에서 R2 키 생성
+                prompt_first = result.get("prompt", "unknown").split(",")[0].strip()
+                safe_result_name = re.sub(r'[^a-zA-Z0-9]', '-', prompt_first).lower().strip('-')
+                safe_result_name = re.sub(r'-+', '-', safe_result_name)  # 연속 하이픈 제거
+                gen_type = result.get("type", "img")
+                r2_key = f"{category}/{safe_result_name}_{gen_type}_{crop_name}.webp"
 
                 result_crops[crop_name] = {
                     "path": out_path,
