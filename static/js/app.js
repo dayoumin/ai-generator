@@ -1,4 +1,4 @@
-// --- Initialization ---
+﻿// --- Initialization ---
 const AppState = {
     currentProject: 'kemi',
     availableProjects: [],
@@ -29,6 +29,7 @@ const AppState = {
     retrySuggestionRequestKey: '',
     retryLineageRequestKey: '',
     pollIntervalId: null,
+    outputsAdvancedVisible: false,
     referenceDefinitions: [],
     lastLogCount: 0,
     lastResultCount: 0,
@@ -65,10 +66,10 @@ function initEventListeners() {
     Utils.el('r2-upload-btn')?.addEventListener('click', uploadToR2);
     Utils.el('cancel-batch-btn')?.addEventListener('click', cancelBatch);
     Utils.el('welcome-go-prompts')?.addEventListener('click', () => {
-        setActiveTab('prompts');
+        setActiveTab('compose');
     });
     Utils.el('welcome-go-references')?.addEventListener('click', () => {
-        setActiveTab('references');
+        setActiveTab('compose');
     });
     Utils.el('toggle-style-config')?.addEventListener('click', toggleStyleConfig);
     Utils.el('clear-logs-btn')?.addEventListener('click', () => {
@@ -87,10 +88,14 @@ function initEventListeners() {
     Utils.el(CONFIG.DOM.TEMPLATE_APPLY_BTN)?.addEventListener('click', applySceneTemplate);
     Utils.el(CONFIG.DOM.TEMPLATE_CLEAR_BTN)?.addEventListener('click', clearSceneTemplateEditor);
     Utils.el(CONFIG.DOM.TEMPLATE_DELETE_BTN)?.addEventListener('click', deleteSceneTemplate);
+    Utils.el(CONFIG.DOM.REFRESH_PREFLIGHT_BTN)?.addEventListener('click', refreshConfirmPreflight);
+    Utils.el(CONFIG.DOM.OUTPUTS_ADVANCED_TOGGLE)?.addEventListener('click', toggleOutputsAdvanced);
     SCENE_PLANNER_IDS.forEach((id) => {
-        Utils.el(id)?.addEventListener('input', () => {
+        Utils.el(id)?.addEventListener('input', async () => {
             saveScenePlannerState();
             updateGenerationModeNote();
+            updateCodexHandoffPanel();
+            await refreshConfirmPreflight();
         });
     });
 
@@ -110,17 +115,14 @@ function initEventListeners() {
         updateOperatorModeAvailability();
         updateGenerationModeNote();
         updateCodexHandoffPanel();
-        if (Utils.el(CONFIG.MODALS.CONFIRM)?.style.display === 'flex') {
-            AppState.lastPreflight = null;
-            await refreshConfirmPreflight();
-        }
+        AppState.lastPreflight = null;
+        await refreshConfirmPreflight();
     });
     Utils.el(CONFIG.DOM.PROVIDER_SELECTOR)?.addEventListener('change', async (e) => {
         handleProviderSelectionChange(e.target.value);
         updateCodexHandoffPanel();
-        if (Utils.el(CONFIG.MODALS.CONFIRM)?.style.display === 'flex') {
-            await refreshConfirmPreflight();
-        }
+        AppState.lastPreflight = null;
+        await refreshConfirmPreflight();
     });
     Utils.el(CONFIG.DOM.OPERATOR_MODE)?.addEventListener('change', async (e) => {
         AppState.currentOperatorMode = e.target.value === 'codex-conversation' ? 'codex-conversation' : 'studio';
@@ -128,10 +130,8 @@ function initEventListeners() {
         updateOperatorModeAvailability();
         updateGenerationModeNote();
         updateCodexHandoffPanel();
-        if (Utils.el(CONFIG.MODALS.CONFIRM)?.style.display === 'flex') {
-            AppState.lastPreflight = null;
-            await refreshConfirmPreflight();
-        }
+        AppState.lastPreflight = null;
+        await refreshConfirmPreflight();
     });
     Utils.el(CONFIG.DOM.CODEX_HANDOFF_COPY_BTN)?.addEventListener('click', copyCodexHandoffPayload);
     Utils.el('close-help-btn')?.addEventListener('click', closeHelpModal);
@@ -150,6 +150,12 @@ function initEventListeners() {
     Utils.el('style-preset')?.addEventListener('change', applyPreset);
     Utils.el('steps')?.addEventListener('input', (e) => Utils.el('steps-val').innerText = e.target.value);
     Utils.el('toggle-all-checkbox')?.addEventListener('change', (e) => toggleAllPrompts(e.target));
+    ['style-prompt', 'negative-prompt', 'default-ar', 'batch-count', 'steps', 'style-preset'].forEach((id) => {
+        Utils.el(id)?.addEventListener('change', () => {
+            updateCodexHandoffPanel();
+            refreshConfirmPreflight();
+        });
+    });
 
     // Settings Auto-save
     const settings = Object.values(CONFIG.DOM.SETTINGS);
@@ -188,7 +194,7 @@ function setActiveTab(tab) {
 
 function updateTopBarButtons(tab) {
     const startBtn = Utils.el(CONFIG.DOM.START_BTN);
-    const showStart = (tab === 'dashboard' || tab === 'prompts');
+    const showStart = (tab === 'dashboard' || tab === 'compose');
     if (startBtn) startBtn.style.display = showStart ? '' : 'none';
 }
 
@@ -264,13 +270,15 @@ function loadOperatorMode(project) {
     saveOperatorMode(project?.id || AppState.currentProject, nextMode);
 }
 
-function selectProjectProvider(project) {
+function selectProjectProvider(project, options = {}) {
+    const { persist = true, keepCurrent = false } = options;
     if (!project) {
         AppState.currentProviderId = null;
         return null;
     }
     const savedState = loadStudioState();
     const supported = (project.supportedProviderInfo || []).map((item) => item.id);
+    const current = String(AppState.currentProviderId || '').trim().toLowerCase();
     const preferred = String(savedState.providerSelections?.[project.id] || '').trim().toLowerCase();
     const defaultProvider = String(project.provider || supported[0] || 'comfyui').trim().toLowerCase();
     const available = supported.filter((providerId) => {
@@ -278,6 +286,8 @@ function selectProjectProvider(project) {
         return !status || (status.configured !== false && status.available !== false);
     });
     const nextProvider = (
+        (keepCurrent && current && supported.includes(current) && current)
+        || 
         (preferred && supported.includes(preferred) && (!AppState.providerStatuses?.[preferred] || available.includes(preferred)) && preferred)
         || (supported.includes(defaultProvider) && (!AppState.providerStatuses?.[defaultProvider] || available.includes(defaultProvider)) && defaultProvider)
         || available[0]
@@ -286,7 +296,9 @@ function selectProjectProvider(project) {
         || 'comfyui'
     );
     AppState.currentProviderId = nextProvider;
-    saveProviderSelection(project.id, nextProvider);
+    if (persist) {
+        saveProviderSelection(project.id, nextProvider);
+    }
     return nextProvider;
 }
 
@@ -301,7 +313,7 @@ function renderProviderSelector(project = getCurrentProjectConfig()) {
     if (!providers.length) {
         const opt = document.createElement('option');
         opt.value = '';
-        opt.textContent = 'No provider available';
+        opt.textContent = '사용 가능한 렌더러 없음';
         select.appendChild(opt);
     }
     providers.forEach((provider) => {
@@ -309,7 +321,7 @@ function renderProviderSelector(project = getCurrentProjectConfig()) {
         const status = AppState.providerStatuses?.[provider.id];
         const disabled = Boolean(status && (status.configured === false || status.available === false));
         opt.value = provider.id;
-        opt.textContent = disabled ? `${provider.label} (unavailable)` : provider.label;
+        opt.textContent = disabled ? `${provider.label} (사용 불가)` : provider.label;
         opt.disabled = disabled;
         if (provider.id === currentProviderId) opt.selected = true;
         select.appendChild(opt);
@@ -323,16 +335,16 @@ function renderProviderSelector(project = getCurrentProjectConfig()) {
         const status = AppState.providerStatuses?.[providerInfo?.id || ''];
         note.classList.remove('is-warning', 'is-error');
         if (AppState.providerHealthFetchError) {
-            note.textContent = 'Provider status is unavailable because the health check failed.';
+            note.textContent = '헬스 체크 요청이 실패해서 렌더러 상태를 확인할 수 없습니다.';
             note.classList.add('is-warning');
         } else if (status?.configured === false) {
-            note.textContent = status.reason || 'Provider setup is required before render.';
+            note.textContent = status.reason || '렌더 전에 렌더러 설정이 필요합니다.';
             note.classList.add('is-error');
         } else if (status && status.available === false) {
-            note.textContent = status.reason || 'Provider is currently offline.';
+            note.textContent = status.reason || '현재 provider가 오프라인입니다.';
             note.classList.add('is-warning');
         } else {
-            note.textContent = providerInfo?.description || 'Provider availability will be checked before render.';
+            note.textContent = providerInfo?.description || '렌더 전에 렌더러 사용 가능 여부를 다시 확인합니다.';
         }
     }
 }
@@ -353,12 +365,12 @@ function updateOperatorModeAvailability() {
     if (note) {
         note.classList.remove('is-warning');
         if (select.value === 'codex-conversation') {
-            note.textContent = 'Codex conversation keeps this scene, template, and review state aligned for chat-guided work.';
+            note.textContent = 'Codex 대화 연동은 현재 장면, 템플릿, 검수 상태를 채팅 작업과 맞춰 줍니다.';
         } else {
-            note.textContent = 'Studio keeps generation inside the app runtime.';
+            note.textContent = 'Studio 운영은 생성 흐름을 앱 내부에서 바로 실행합니다.';
         }
         if (generationMode !== 'assisted') {
-            note.textContent += ' Codex conversation is available only in assisted mode.';
+            note.textContent += ' Codex 대화 연동은 보조 렌더 모드에서만 사용할 수 있습니다.';
             note.classList.add('is-warning');
         }
     }
@@ -424,7 +436,7 @@ function buildCodexHandoffPayload(selectedPrompts = getSelectedPromptsForGenerat
         preflight: AppState.lastPreflight?.summary || null,
         requestPreview: payload,
         codexAsk: payload.mode === 'assisted'
-            ? 'Use this generation request to create or refine the next image result with stronger consistency, scene clarity, and character accuracy. This handoff is request-only; use the run handoff from Outputs when review or retry context matters.'
+            ? '이 generation request를 사용하면 더 높은 일관성, 장면 선명도, 캐릭터 정확도로 다음 이미지를 만들거나 수정할 수 있습니다. 이 handoff는 요청 전용이며, 검수나 재시도 문맥이 중요하면 Outputs의 run handoff를 사용하세요.'
             : 'Use this direct generation state to refine prompts or propose a better assisted scene setup before rendering.'
     };
 }
@@ -447,44 +459,44 @@ function buildCodexHandoffMessage(handoff) {
     const reviewNotes = runContext.reviewNotes || [];
     const reviewSummaryText = reviewSummary
         ? `A${reviewSummary.approved || 0} / R${reviewSummary.rejected || 0} / N${reviewSummary.noted || 0}`
-        : 'none';
+        : '없음';
     const reviewNotesText = reviewNotes.length
         ? reviewNotes.map((item) => `${item.status}: ${item.note}`).join(' | ')
-        : 'none';
+        : '없음';
     const retryPatchEntries = Object.entries(retrySuggestion?.sceneDraftPatch || {})
         .filter(([, value]) => value)
         .map(([key, value]) => `${key}=${value}`);
-    const retryHintsText = (retrySuggestion?.promptHints || []).join(' | ') || 'none';
-    const retryStyleText = (retrySuggestion?.stylePromptAdditions || []).join(' | ') || 'none';
-    const retryNegativeText = (retrySuggestion?.negativePromptAdditions || []).join(' | ') || 'none';
+    const retryHintsText = (retrySuggestion?.promptHints || []).join(' | ') || '없음';
+    const retryStyleText = (retrySuggestion?.stylePromptAdditions || []).join(' | ') || '없음';
+    const retryNegativeText = (retrySuggestion?.negativePromptAdditions || []).join(' | ') || '없음';
     const retryLineageText = retryLineage
-        ? `${retryLineage.runCount || 0} runs, latest outcome: ${retryLineage.latestOutcome || 'n/a'}`
-        : 'none';
+        ? `${retryLineage.runCount || 0}개 run, 최신 결과: ${retryLineage.latestOutcome || '없음'}`
+        : '없음';
     const lines = [
-        'Use the following studio state as the source of truth.',
-        `Project: ${handoff.project?.name || handoff.project?.id || 'unknown'}`,
-        `Generation mode: ${execution.generationMode || 'assisted'}`,
-        `Operator mode: ${execution.operatorMode || 'codex-conversation'}`,
-        `Renderer: ${execution.providerLabel || execution.providerId || 'unknown'}`,
-        `Template: ${template ? `${template.name} (${template.composition || 'custom'})` : 'none selected'}`,
-        `Scene cue: ${sceneCue}`,
-        `Selected prompts: ${promptCount}`,
-        `Selected references: ${referenceCount}`,
-        `Outputs: ${outputTypes}`,
-        `Run context: ${runContext.runId ? `${String(runContext.runId).slice(0, 8)} (${runContext.mode || 'unknown'})` : 'none'}`,
-        `Review summary: ${reviewSummaryText}`,
-        `Review notes: ${reviewNotesText}`,
-        `Retry suggestion: ${retrySuggestion?.summary || 'none'}`,
-        `Retry scene patch: ${retryPatchEntries.join(' | ') || 'none'}`,
-        `Retry prompt hints: ${retryHintsText}`,
-        `Retry style additions: ${retryStyleText}`,
-        `Retry negative additions: ${retryNegativeText}`,
-        `Retry lineage: ${retryLineageText}`,
+        '아래 studio 상태를 기준 정보로 사용하세요.',
+        `프로젝트: ${handoff.project?.name || handoff.project?.id || '알 수 없음'}`,
+        `생성 모드: ${execution.generationMode === 'direct' ? '직접 렌더' : '보조 렌더'}`,
+        `운영 방식: ${execution.operatorMode === 'codex-conversation' ? 'Codex 대화 연동' : 'Studio 운영'}`,
+        `렌더러: ${execution.providerLabel || execution.providerId || '알 수 없는 렌더러'}`,
+        `템플릿: ${template ? `${template.name} (${template.composition || '사용자 지정'})` : '선택 없음'}`,
+        `장면 요약: ${sceneCue}`,
+        `선택된 프롬프트: ${promptCount}`,
+        `선택된 레퍼런스: ${referenceCount}`,
+        `출력 타입: ${outputTypes}`,
+        `Run 문맥: ${runContext.runId ? `${String(runContext.runId).slice(0, 8)} (${runContext.mode === 'direct' ? '직접 렌더' : '보조 렌더'})` : '없음'}`,
+        `검수 요약: ${reviewSummaryText}`,
+        `검수 메모: ${reviewNotesText}`,
+        `재시도 제안: ${retrySuggestion?.summary || '없음'}`,
+        `재시도 장면 패치: ${retryPatchEntries.join(' | ') || '없음'}`,
+        `재시도 프롬프트 힌트: ${retryHintsText}`,
+        `재시도 스타일 추가: ${retryStyleText}`,
+        `재시도 네거티브 추가: ${retryNegativeText}`,
+        `재시도 이력: ${retryLineageText}`,
         '',
-        'Task:',
-        handoff.codexAsk || 'Use this state to create or refine the image generation result.',
+        '작업 요청:',
+        handoff.codexAsk || '이 상태를 기준으로 이미지 생성 결과를 만들거나 보정하세요.',
         '',
-        'When you reply, treat the JSON below as the exact handoff payload.',
+        '응답할 때 아래 JSON을 정확한 handoff payload로 사용하세요.',
         '',
         JSON.stringify(handoff, null, 2)
     ];
@@ -508,7 +520,7 @@ function updateCodexHandoffPanel(selectedPrompts = getSelectedPromptsForGenerati
     const handoff = buildCodexHandoffPayload(selectedPrompts);
     AppState.lastCodexHandoffPayload = handoff;
     AppState.lastCodexHandoff = buildCodexHandoffMessage(handoff);
-    summary.textContent = `Copy this request into chat so Codex can work from the same project, template, scene, references, and generation settings. Use Outputs > Copy Run Handoff when review or retry context matters.`;
+    summary.textContent = `같은 프로젝트, 템플릿, 장면, 레퍼런스, 생성 설정을 Codex와 맞추려면 이 요청을 복사하세요. 검수나 재시도 문맥이 중요하면 Outputs의 Run Handoff를 사용하세요.`;
     textarea.value = AppState.lastCodexHandoff;
     panel.style.display = '';
 }
@@ -518,25 +530,25 @@ async function copyCodexHandoffPayload() {
         updateCodexHandoffPanel();
     }
     if (!AppState.lastCodexHandoff) {
-        showToast('No Codex handoff payload available', 'warning');
+        showToast('복사할 Codex handoff가 없습니다', 'warning');
         return;
     }
     try {
         await navigator.clipboard.writeText(AppState.lastCodexHandoff);
-        showToast('Codex handoff copied', 'success');
+        showToast('Codex handoff를 복사했습니다', 'success');
     } catch (e) {
-        showToast(`Codex handoff copy failed: ${e.message}`, 'error');
+        showToast(`Codex handoff 복사 실패: ${e.message}`, 'error');
     }
 }
 
 async function fetchRunCodexHandoff(runId) {
     if (!runId) {
-        throw new Error('No run selected for Codex handoff');
+        throw new Error('Codex handoff를 불러올 run이 없습니다');
     }
     const resp = await fetch(`${CONFIG.API.RUN_CODEX_HANDOFF}/${encodeURIComponent(runId)}/codex-handoff?project=${encodeURIComponent(AppState.currentProject)}`);
     const data = await resp.json();
     if (!resp.ok || data.detail) {
-        throw new Error(data.detail || 'Failed to load run Codex handoff');
+        throw new Error(data.detail || 'Run Codex handoff를 불러오지 못했습니다');
     }
     return data;
 }
@@ -562,7 +574,7 @@ async function loadRunCodexHandoff(runId, shouldRender = true) {
             AppState.currentRunCodexHandoff = handoff;
         }
     } catch (e) {
-        console.error('Failed to load run Codex handoff', e);
+        console.error('Run Codex handoff 불러오기 실패', e);
         if (AppState.currentRunCodexHandoffRequestKey === requestKey) {
             AppState.currentRunCodexHandoff = null;
         }
@@ -573,7 +585,7 @@ async function loadRunCodexHandoff(runId, shouldRender = true) {
 async function copyFocusedRunCodexHandoff() {
     const runId = AppState.retryFocusRunId || AppState.displayedRunId || AppState.currentRunId || null;
     if (!runId) {
-        showToast('No run selected for Codex handoff', 'warning');
+        showToast('Codex handoff를 복사할 run이 없습니다', 'warning');
         return;
     }
     try {
@@ -584,9 +596,9 @@ async function copyFocusedRunCodexHandoff() {
         AppState.currentRunCodexHandoffRequestKey = buildRunHandoffRequestKey(AppState.currentProject, runId);
         renderRunCodexHandoffPreview();
         await navigator.clipboard.writeText(AppState.lastCodexHandoff);
-        showToast('Run Codex handoff copied', 'success');
+        showToast('Run용 Codex handoff를 복사했습니다', 'success');
     } catch (e) {
-        showToast(`Run Codex handoff failed: ${e.message}`, 'error');
+        showToast(`Run용 Codex handoff 복사 실패: ${e.message}`, 'error');
     }
 }
 
@@ -608,7 +620,7 @@ function renderRunCodexHandoffPreview() {
     if (!handoff || !handoff.payload || (displayedRunId && handoffRunId && handoffRunId !== displayedRunId)) {
         container.innerHTML = `
             <div class="run-empty">
-                Codex handoff preview is loading for the selected assisted run.
+                선택한 assisted run의 Codex handoff 미리보기를 불러오는 중입니다.
             </div>
         `;
         return;
@@ -624,31 +636,31 @@ function renderRunCodexHandoffPreview() {
     container.innerHTML = `
         <div class="run-handoff-header">
             <div>
-                <strong>Codex Handoff Preview</strong>
-                <div class="run-handoff-sub">Run ${String(runContext.runId || '').slice(0, 8)} / ${payload.execution?.providerLabel || payload.execution?.providerId || 'unknown renderer'}</div>
+                <strong>Codex handoff 미리보기</strong>
+                <div class="run-handoff-sub">Run ${String(runContext.runId || '').slice(0, 8)} / ${payload.execution?.providerLabel || payload.execution?.providerId || '알 수 없는 렌더러'}</div>
             </div>
-            <button class="btn btn-secondary" id="copy-run-codex-handoff-inline-btn">Copy Full Handoff</button>
+            <button class="btn btn-secondary" id="copy-run-codex-handoff-inline-btn">전체 handoff 복사</button>
         </div>
         <div class="run-handoff-grid">
             <div class="run-handoff-card">
-                <label>Review Context</label>
+                <label>검수 문맥</label>
                 <div class="run-handoff-meta">A${reviewSummary.approved || 0} / R${reviewSummary.rejected || 0} / N${reviewSummary.noted || 0}</div>
                 <div class="run-handoff-notes">
                     ${(runContext.reviewNotes || []).length
                         ? (runContext.reviewNotes || []).map((item) => `<div class="run-handoff-note"><strong>${escapeHtml(item.status)}</strong><span>${escapeHtml(item.note)}</span></div>`).join('')
-                        : '<div class="run-empty">No review notes saved for this run.</div>'}
+                        : '<div class="run-empty">이 run에는 저장된 검수 메모가 없습니다.</div>'}
                 </div>
             </div>
             <div class="run-handoff-card">
-                <label>Retry Context</label>
-                <div class="run-handoff-meta">${escapeHtml(retrySuggestion?.summary || 'No retry suggestion summary yet.')}</div>
+                <label>재시도 문맥</label>
+                <div class="run-handoff-meta">${escapeHtml(retrySuggestion?.summary || '아직 재시도 제안 요약이 없습니다.')}</div>
                 <div class="retry-chip-row">
                     ${(retrySuggestion?.promptHints || []).map((item) => `<span class="retry-chip">${escapeHtml(item)}</span>`).join('')}
                 </div>
-                <div class="run-handoff-meta">${retryLineage ? `${retryLineage.runCount || 0} runs in lineage` : 'No retry lineage yet.'}</div>
+                <div class="run-handoff-meta">${retryLineage ? `재시도 이력에 ${retryLineage.runCount || 0}개 run` : '아직 재시도 이력이 없습니다.'}</div>
             </div>
         </div>
-        <label class="run-handoff-label">Message Preview</label>
+        <label class="run-handoff-label">메시지 미리보기</label>
         <textarea class="handoff-textarea run-handoff-textarea" readonly>${messagePreview}</textarea>
     `;
     Utils.el('copy-run-codex-handoff-inline-btn')?.addEventListener('click', copyFocusedRunCodexHandoff);
@@ -673,28 +685,28 @@ function updateProviderStatusChrome() {
     }
 
     if (label) {
-        if (AppState.providerHealthFetchError) label.textContent = `${providerInfo.label} status unavailable`;
-        else if (status?.configured === false) label.textContent = `${providerInfo.label} setup required`;
-        else if (status && status.available === false) label.textContent = `${providerInfo.label} offline`;
-        else label.textContent = `${providerInfo.label} ready`;
+        if (AppState.providerHealthFetchError) label.textContent = `${providerInfo.label} 상태 확인 불가`;
+        else if (status?.configured === false) label.textContent = `${providerInfo.label} 설정 필요`;
+        else if (status && status.available === false) label.textContent = `${providerInfo.label} 오프라인`;
+        else label.textContent = `${providerInfo.label} 준비됨`;
     }
 
     if (detail) {
-        detail.textContent = (AppState.providerHealthFetchError ? 'Health check request failed.' : '')
+        detail.textContent = (AppState.providerHealthFetchError ? '헬스 체크 요청이 실패했습니다.' : '')
             || status?.reason
             || providerInfo.description
-            || 'Provider status is ready.';
+            || '렌더러 상태가 준비되었습니다.';
     }
 
     if (chip) {
         const statusText = AppState.providerHealthFetchError
-            ? 'status unavailable'
+            ? '상태 확인 불가'
             : status?.configured === false
-                ? 'setup required'
+                ? '설정 필요'
                 : status && status.available === false
-                    ? 'offline'
-                    : 'ready';
-        chip.textContent = `Renderer: ${providerInfo.label} - ${statusText}`;
+                    ? '오프라인'
+                    : '준비됨';
+        chip.textContent = `렌더러: ${providerInfo.label} - ${statusText}`;
     }
 }
 
@@ -787,14 +799,14 @@ function setDisplayedRun(recordOrStatus) {
 
 async function followLiveRun() {
     if (!AppState.currentRunId) {
-        showToast('No live run to follow', 'warning');
+        showToast('추적 중인 live run이 없습니다', 'warning');
         return;
     }
     try {
         const resp = await fetch(buildStatusUrl());
         const data = await resp.json();
         if (!resp.ok || data.detail) {
-            throw new Error(data.detail || 'Failed to load live run');
+            throw new Error(data.detail || 'Live run을 불러오지 못했습니다');
         }
         resetRunViewState();
         updateUI(data, { syncCurrentRun: true, syncDisplayedRun: true });
@@ -812,7 +824,7 @@ async function followLiveRun() {
         renderRunComparePanel();
         setActiveTab('outputs');
     } catch (e) {
-        showToast(`Live run load failed: ${e.message}`, 'error');
+        showToast(`Live run 불러오기 실패: ${e.message}`, 'error');
     }
 }
 
@@ -829,17 +841,15 @@ async function checkProviderHealth() {
         AppState.providerHealthFetchError = true;
     }
     const project = getCurrentProjectConfig();
-    selectProjectProvider(project);
+    selectProjectProvider(project, { persist: false, keepCurrent: true });
     renderProviderSelector(project);
     updateProviderStatusChrome();
-    if (Utils.el(CONFIG.MODALS.CONFIRM)?.style.display === 'flex') {
-        const providerChanged = previousProviderId !== AppState.currentProviderId;
-        if (providerChanged) {
-            updateGenerationModeNote();
-            AppState.lastPreflight = null;
-        }
-        await refreshConfirmPreflight();
+    const providerChanged = previousProviderId !== AppState.currentProviderId;
+    if (providerChanged) {
+        updateGenerationModeNote();
+        AppState.lastPreflight = null;
     }
+    await refreshConfirmPreflight();
 }
 
 // --- Check Existing Batch on Load ---
@@ -1165,18 +1175,15 @@ function updateProjectChrome(project) {
 
     if (capabilityNote) {
         if (supportsReferenceAssets) {
-            capabilityNote.textContent = `이 프로젝트는 ${providerLabel}에서 선택한 레퍼런스를 실제 생성 입력에도 연결합니다.`;
-            capabilityNote.style.display = '';
+            capabilityNote.textContent = `${providerLabel}는 선택된 레퍼런스를 렌더 과정에 직접 사용할 수 있습니다.`;
         } else if (!providerSupportsReferences) {
-            capabilityNote.textContent = `현재 ${providerLabel} adapter는 레퍼런스를 렌더러 conditioning으로 직접 넣지 않습니다. 대신 장면 설계와 검수 기준에 반영됩니다.`;
-            capabilityNote.style.display = '';
+            capabilityNote.textContent = `${providerLabel}는 현재 이 adapter에서 직접 레퍼런스 conditioning을 지원하지 않습니다. 대신 레퍼런스는 장면 설계와 검수 기준에 반영됩니다.`;
         } else if (isReferenceProject) {
-            capabilityNote.textContent = `이 프로젝트는 ${providerLabel}에서 레퍼런스를 planning-first로 다룹니다. 현재 경로에서는 레퍼런스가 장면 설계와 검수 기준에 우선 반영됩니다.`;
-            capabilityNote.style.display = '';
+            capabilityNote.textContent = `${providerLabel}는 이 프로젝트를 planning-first 방식으로 처리합니다. 직접 주입되지 않아도 레퍼런스는 장면 구성과 검수에 반영됩니다.`;
         } else {
-            capabilityNote.textContent = `현재 ${providerLabel}에서는 레퍼런스 라이브러리와 배치 선택을 우선 관리합니다. 실제 conditioning 연결은 이 프로젝트에서 아직 활성화되지 않았습니다.`;
-            capabilityNote.style.display = '';
+            capabilityNote.textContent = `${providerLabel}는 레퍼런스 라이브러리를 배치 구성에는 사용하지만, 이 워크플로우에서는 직접 conditioning이 아직 활성화되어 있지 않습니다.`;
         }
+        capabilityNote.style.display = '';
     }
 
     if (welcomeBadge) {
@@ -1184,26 +1191,26 @@ function updateProjectChrome(project) {
     }
 
     if (welcomeTitle) {
-        welcomeTitle.textContent = isReferenceProject ? '기준 캐릭터부터 준비하세요' : '이미지 생성을 시작하세요';
+        welcomeTitle.textContent = isReferenceProject ? '캐릭터 기준 장면을 준비하세요' : '이미지 생성을 시작하세요';
     }
 
     if (welcomeDescription) {
         welcomeDescription.textContent = isReferenceProject
-            ? `${label} 프로젝트는 레퍼런스 자산을 먼저 준비한 뒤 ${providerLabel}에 보낼 장면을 정리하는 흐름이 가장 안정적입니다.`
-            : `${providerLabel} 기준으로 프롬프트 목록을 불러오고, 스타일을 설정한 후 생성하세요.`;
+            ? `${label} 프로젝트는 재사용 가능한 캐릭터 레퍼런스에서 시작합니다. Compose에서 장면을 정리한 뒤 ${providerLabel}로 렌더하세요.`
+            : `Compose에서 프롬프트, 템플릿, 레퍼런스를 정리하고 ${providerLabel} 설정을 확인한 뒤 실행하세요.`;
     }
 
     if (welcomeChecklist) {
         welcomeChecklist.innerHTML = isReferenceProject
             ? `
-                <div class="welcome-check-item">1. 레퍼런스 탭에서 프로젝트 라이브러리 상태를 확인하세요</div>
-                <div class="welcome-check-item">2. 기준 자산과 이번 배치용 임시 레퍼런스를 구분해서 준비하세요</div>
-                <div class="welcome-check-item">3. 프롬프트 탭에서 생성할 묶음을 선택한 뒤 필요한 슬롯만 골라서 시작하세요</div>
+                <div class="welcome-check-item">1. 프로젝트 레퍼런스 라이브러리를 확인하세요</div>
+                <div class="welcome-check-item">2. Compose에서 레퍼런스, 템플릿, 장면 메모를 정리하세요</div>
+                <div class="welcome-check-item">3. 실행 설정을 확인한 뒤 필요한 자산만 시작하세요</div>
             `
             : `
                 <div class="welcome-check-item">1. 프로젝트를 선택하세요</div>
-                <div class="welcome-check-item">2. 프롬프트를 불러오세요</div>
-                <div class="welcome-check-item">3. 스타일을 조정하고 생성하세요</div>
+                <div class="welcome-check-item">2. Compose에서 장면을 구성하세요</div>
+                <div class="welcome-check-item">3. 실행 설정을 확인하고 시작하세요</div>
             `;
     }
 
@@ -1213,20 +1220,16 @@ function updateProjectChrome(project) {
 
     const referenceNav = document.querySelector('.nav-item[data-tab="references"]');
     if (referenceNav) {
-        referenceNav.style.display = isReferenceProject ? '' : 'none';
+        referenceNav.style.display = 'none';
     }
 
     const referencesTab = Utils.el('references-tab');
     if (referencesTab) {
-        referencesTab.style.display = isReferenceProject ? '' : 'none';
-    }
-
-    const activeReferenceTab = document.querySelector('.nav-item.active[data-tab="references"]');
-    if (!isReferenceProject && activeReferenceTab) {
-        setActiveTab('dashboard');
+        referencesTab.style.display = 'none';
     }
 
     updateProviderStatusChrome();
+    updateComposeSelectionSummary();
 }
 
 async function switchProject(projectId, options = {}) {
@@ -1246,7 +1249,7 @@ async function switchProject(projectId, options = {}) {
     renderProviderSelector(project);
     updateOperatorModeAvailability();
     updateProjectChrome(project);
-    setActiveTab((project?.workflowMode || 'prompt-first') === 'reference-first' ? 'references' : 'dashboard');
+    setActiveTab('compose');
 
     const styleInput = Utils.el('style-prompt');
     if (styleInput) styleInput.value = project?.generation?.style || '';
@@ -1343,17 +1346,17 @@ async function loadReferenceAssets() {
 
 function getSceneTemplateCompositionLabel(value) {
     const labels = {
-        single: '1 person',
-        duo: '2 people',
-        group: 'group',
-        custom: 'custom'
+        single: '1인',
+        duo: '2인',
+        group: '그룹',
+        custom: '사용자 지정'
     };
-    return labels[value] || value || 'custom';
+    return labels[value] || value || '사용자 지정';
 }
 
 function summarizeTemplateAssets(template) {
     const assets = template?.referenceAssetPaths || [];
-    if (!assets.length) return 'No reference assets saved';
+    if (!assets.length) return '저장된 레퍼런스 자산 없음';
     const names = assets
         .map((path) => path.split('/').pop() || path)
         .slice(0, 3)
@@ -1509,10 +1512,22 @@ async function loadRetryLineage(runId, shouldRender = true) {
 }
 
 function formatRunTimestamp(value) {
-    if (!value) return 'unknown time';
+    if (!value) return '시간 정보 없음';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
     return date.toLocaleString();
+}
+
+function formatFinishStatus(value) {
+    const map = {
+        ready: '준비됨',
+        running: '실행 중',
+        completed: '완료',
+        failed: '실패',
+        cancelled: '취소됨',
+        unknown: '상태 미상'
+    };
+    return map[value] || value || '상태 미상';
 }
 
 function getCompareRunBuckets() {
@@ -1526,8 +1541,8 @@ function getCompareRunBuckets() {
         assisted = displayedRun;
     }
     return [
-        { key: 'direct', title: 'Direct Run', run: direct },
-        { key: 'assisted', title: 'Assisted Run', run: assisted }
+        { key: 'direct', title: '직접 렌더 Run', run: direct },
+        { key: 'assisted', title: '보조 렌더 Run', run: assisted }
     ];
 }
 
@@ -1555,20 +1570,20 @@ function compareRunField(directRun, assistedRun, label, getValue) {
 function buildRunDiffItems(directRun, assistedRun) {
     return [
         compareRunField(directRun, assistedRun, 'Provider', (run) => run.providerId),
-        compareRunField(directRun, assistedRun, 'Operator', (run) => run.operatorMode || 'studio'),
-        compareRunField(directRun, assistedRun, 'Template', (run) => run.templateId || 'none'),
-        compareRunField(directRun, assistedRun, 'Retry From', (run) => run.retry?.fromRunId || 'root'),
-        compareRunField(directRun, assistedRun, 'Scene', (run) => run.sceneSummary || ''),
-        compareRunField(directRun, assistedRun, 'References', (run) => run.referenceCount || 0),
-        compareRunField(directRun, assistedRun, 'Prompts', (run) => run.promptCount || 0),
-        compareRunField(directRun, assistedRun, 'Outputs', (run) => run.outputTypes || []),
-        compareRunField(directRun, assistedRun, 'Status', (run) => run.isRunning ? 'running' : (run.finishStatus || 'unknown')),
-        compareRunField(directRun, assistedRun, 'Success', (run) => `${run.succeeded || 0}/${run.total || 0}`),
-        compareRunField(directRun, assistedRun, 'Review Coverage', (run) => {
+        compareRunField(directRun, assistedRun, '운영 방식', (run) => run.operatorMode || 'studio'),
+        compareRunField(directRun, assistedRun, '템플릿', (run) => run.templateId || '없음'),
+        compareRunField(directRun, assistedRun, '재시도 시작점', (run) => run.retry?.fromRunId || 'root'),
+        compareRunField(directRun, assistedRun, '장면', (run) => run.sceneSummary || ''),
+        compareRunField(directRun, assistedRun, '레퍼런스', (run) => run.referenceCount || 0),
+        compareRunField(directRun, assistedRun, '프롬프트', (run) => run.promptCount || 0),
+        compareRunField(directRun, assistedRun, '출력 타입', (run) => run.outputTypes || []),
+        compareRunField(directRun, assistedRun, '상태', (run) => run.isRunning ? '실행 중' : (run.finishStatus || 'unknown')),
+        compareRunField(directRun, assistedRun, '성공', (run) => `${run.succeeded || 0}/${run.total || 0}`),
+        compareRunField(directRun, assistedRun, '검수 범위', (run) => {
             const review = run.reviewSummary || {};
             return `A${review.approved || 0} / R${review.rejected || 0} / N${review.noted || 0}`;
         }),
-        compareRunField(directRun, assistedRun, 'Review Notes', (run) => {
+        compareRunField(directRun, assistedRun, '검수 메모', (run) => {
             const highlights = run.reviewSummary?.noteHighlights || [];
             return highlights.length ? highlights.join(' | ') : '';
         })
@@ -1582,7 +1597,7 @@ function renderRunDiffSummary(directRun, assistedRun) {
     if (!directRun || !assistedRun) {
         container.innerHTML = `
             <div class="run-empty">
-                Compare view appears when both a recent direct run and a recent assisted run exist.
+                최근 직접 렌더 Run과 보조 렌더 Run이 모두 있을 때 비교 화면이 나타납니다.
             </div>
         `;
         return;
@@ -1594,23 +1609,23 @@ function renderRunDiffSummary(directRun, assistedRun) {
 
     container.innerHTML = `
         <div class="run-diff-header">
-            <strong>Direct vs Assisted Diff</strong>
-            <span class="run-diff-sub">${sameCount} same / ${diffCount} different</span>
+            <strong>직접 렌더 vs 보조 렌더 비교</strong>
+            <span class="run-diff-sub">${sameCount}개 동일 / ${diffCount}개 차이</span>
         </div>
         <div class="run-diff-grid">
             ${diffItems.map((item) => `
                 <div class="run-diff-item">
                     <div class="run-diff-label-row">
                         <span class="run-diff-label">${item.label}</span>
-                        <span class="run-diff-state ${item.same ? 'same' : 'diff'}">${item.same ? 'same' : 'different'}</span>
+                        <span class="run-diff-state ${item.same ? 'same' : 'diff'}">${item.same ? '동일' : '차이'}</span>
                     </div>
                     <div class="run-diff-values">
                         <div class="run-diff-value">
-                            <span class="run-diff-mode">Direct</span>
+                            <span class="run-diff-mode">직접 렌더</span>
                             <span>${item.directValue}</span>
                         </div>
                         <div class="run-diff-value">
-                            <span class="run-diff-mode">Assisted</span>
+                            <span class="run-diff-mode">보조 렌더</span>
                             <span>${item.assistedValue}</span>
                         </div>
                     </div>
@@ -1643,7 +1658,7 @@ function renderRetryLineagePanel() {
     if (!lineage || !(lineage.items || []).length) {
         container.innerHTML = `
             <div class="run-empty">
-                Retry history appears once an assisted run is retried from review suggestions.
+                검수 제안으로 assisted run을 다시 돌리면 재시도 이력이 여기에 나타납니다.
             </div>
         `;
         return;
@@ -1652,16 +1667,16 @@ function renderRetryLineagePanel() {
     const items = lineage.items || [];
     const currentItem = items.find((item) => item.isCurrent) || items[items.length - 1];
     const summaryText = lineage.hasRetries
-        ? `${items.length} runs in this retry chain. Current focus: ${String(lineage.currentRunId || '').slice(0, 8)}`
-        : 'No retry chain yet for this assisted run.';
+        ? `이 재시도 체인에는 ${items.length}개 run이 있습니다. 현재 기준 run: ${String(lineage.currentRunId || '').slice(0, 8)}`
+        : '이 assisted run에는 아직 재시도 체인이 없습니다.';
 
     container.innerHTML = `
         <div class="retry-lineage-header">
             <div>
-                <strong>Retry History</strong>
+                <strong>재시도 이력</strong>
                 <div class="retry-lineage-summary">${summaryText}</div>
             </div>
-            <div class="run-compare-sub">${currentItem?.sceneSummary || 'No scene summary'}</div>
+            <div class="run-compare-sub">${currentItem?.sceneSummary || '장면 요약 없음'}</div>
         </div>
         <div class="retry-lineage-list">
             ${items.map((item) => {
@@ -1671,34 +1686,34 @@ function renderRetryLineagePanel() {
                 const retry = item.retry || {};
                 const outcomeTone = getRetryOutcomeTone(comparison?.label);
                 const depthClass = `depth-${Math.min(item.depth || 0, 4)}`;
-                const noteText = (review.noteHighlights || []).join(' | ') || 'No review notes';
+                const noteText = (review.noteHighlights || []).join(' | ') || '검수 메모 없음';
                 const retryMeta = retry.fromRunId
-                    ? `Retry from ${String(retry.fromRunId).slice(0, 8)}${retry.source ? ` via ${retry.source}` : ''}`
-                    : 'Root run';
+                    ? `Run ${String(retry.fromRunId).slice(0, 8)} 에서 재시도${retry.source ? ` / ${retry.source}` : ''}`
+                    : '루트 run';
                 return `
                     <div class="retry-lineage-item ${depthClass} ${item.isCurrent ? 'current' : ''}">
                         <div class="retry-lineage-top">
                             <div class="retry-lineage-title">
-                                <strong>${item.isCurrent ? 'Current Run' : `Run ${String(item.runId || '').slice(0, 8)}`}</strong>
+                                <strong>${item.isCurrent ? '현재 Run' : `Run ${String(item.runId || '').slice(0, 8)}`}</strong>
                                 <span class="run-compare-sub">${formatRunTimestamp(item.updatedAt || item.createdAt)}</span>
                             </div>
                             <div class="retry-lineage-badges">
                                 <span class="mode-badge ${item.mode}">${item.mode}</span>
-                                <span class="run-status-badge">${item.isRunning ? 'running' : (item.finishStatus || 'unknown')}</span>
-                                ${item.isCurrent ? '<span class="run-status-badge">current</span>' : ''}
-                                ${retry.isRetry ? '<span class="run-status-badge">retry</span>' : '<span class="run-status-badge">root</span>'}
+                                <span class="run-status-badge">${item.isRunning ? '실행 중' : formatFinishStatus(item.finishStatus || 'unknown')}</span>
+                                ${item.isCurrent ? '<span class="run-status-badge">현재</span>' : ''}
+                                ${retry.isRetry ? '<span class="run-status-badge">재시도</span>' : '<span class="run-status-badge">루트</span>'}
                             </div>
                         </div>
                         <div class="retry-lineage-meta">
-                            <span>${item.succeeded || 0}/${item.total || 0} success</span>
-                            <span>A${review.approved || 0} / R${review.rejected || 0} / Notes ${review.noted || 0}</span>
-                            <span>${item.templateId || 'no template'}</span>
+                            <span>${item.succeeded || 0}/${item.total || 0} 성공</span>
+                            <span>A${review.approved || 0} / R${review.rejected || 0} / 메모 ${review.noted || 0}</span>
+                            <span>${item.templateId || '템플릿 없음'}</span>
                             <span>${retryMeta}</span>
                         </div>
                         ${comparison ? `<div class="retry-lineage-outcome ${outcomeTone}"><strong>${comparison.label}</strong> ${comparison.summary}</div>` : ''}
                         ${changes && changes.count ? `
                             <div class="retry-lineage-change-block">
-                                <label>Request Changes</label>
+                                <label>요청 변경점</label>
                                 <div class="retry-lineage-change-summary">${escapeHtml(changes.summary || '')}</div>
                                 <div class="retry-lineage-change-list">
                                     ${(changes.items || []).map((change) => `<span class="retry-chip">${escapeHtml(change.detail || '')}</span>`).join('')}
@@ -1707,7 +1722,7 @@ function renderRetryLineagePanel() {
                         ` : ''}
                         <div class="run-compare-sub">${noteText}</div>
                         <div class="retry-lineage-actions">
-                            <button class="btn btn-secondary lineage-load-btn" data-run-id="${item.runId}">View Run</button>
+                            <button class="btn btn-secondary lineage-load-btn" data-run-id="${item.runId}">Run 보기</button>
                         </div>
                     </div>
                 `;
@@ -1728,7 +1743,7 @@ function renderRetrySuggestionPanel() {
     if (!suggestion) {
         container.innerHTML = `
             <div class="run-empty">
-                Retry suggestions appear for the latest assisted run after review notes are added.
+                검수 메모가 쌓이면 최신 assisted run 기준 재시도 제안이 여기에 나타납니다.
             </div>
         `;
         return;
@@ -1744,39 +1759,39 @@ function renderRetrySuggestionPanel() {
     container.innerHTML = `
         <div class="retry-suggestion-header">
             <div>
-                <strong>Suggested Assisted Retry</strong>
-                <div class="retry-suggestion-summary">${suggestion.summary || 'No retry summary available.'}</div>
+                <strong>보조 렌더 재시도 제안</strong>
+                <div class="retry-suggestion-summary">${suggestion.summary || '재시도 요약이 없습니다.'}</div>
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                <button class="btn btn-secondary" id="apply-retry-suggestion-btn">Apply To Planner</button>
-                <button class="btn btn-primary" id="start-retry-suggestion-btn">Retry This Run</button>
+                <button class="btn btn-secondary" id="apply-retry-suggestion-btn">Planner에 적용</button>
+                <button class="btn btn-primary" id="start-retry-suggestion-btn">이 Run 다시 생성</button>
             </div>
         </div>
         <div class="retry-suggestion-grid">
             <div class="retry-suggestion-card">
-                <label>Scene Planner Patch</label>
+                <label>Scene Planner 변경안</label>
                 ${patchValues.length ? `
                     <div class="retry-note-list">
                         ${patchValues.map(([key, value]) => `<div class="retry-note-item"><strong>${key}</strong>${value}</div>`).join('')}
                     </div>
-                ` : '<div class="run-empty">No scene patch suggested.</div>'}
+                ` : '<div class="run-empty">제안된 scene patch가 없습니다.</div>'}
             </div>
             <div class="retry-suggestion-card">
-                <label>Prompt Hints</label>
-                ${promptHints.length ? `<div class="retry-chip-row">${promptHints.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">No prompt hints yet.</div>'}
-                <label style="margin-top: 8px;">Style Additions</label>
-                ${styleAdds.length ? `<div class="retry-chip-row">${styleAdds.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">No style additions.</div>'}
-                <label style="margin-top: 8px;">Negative Additions</label>
-                ${negativeAdds.length ? `<div class="retry-chip-row">${negativeAdds.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">No negative additions.</div>'}
+                <label>프롬프트 힌트</label>
+                ${promptHints.length ? `<div class="retry-chip-row">${promptHints.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">아직 프롬프트 힌트가 없습니다.</div>'}
+                <label style="margin-top: 8px;">스타일 추가</label>
+                ${styleAdds.length ? `<div class="retry-chip-row">${styleAdds.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">스타일 추가 제안이 없습니다.</div>'}
+                <label style="margin-top: 8px;">네거티브 추가</label>
+                ${negativeAdds.length ? `<div class="retry-chip-row">${negativeAdds.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">네거티브 추가 제안이 없습니다.</div>'}
             </div>
         </div>
         <div class="retry-suggestion-card">
-            <label>Source Review Notes</label>
+            <label>원본 검수 메모</label>
             ${sourceNotes.length ? `
                 <div class="retry-note-list">
                     ${sourceNotes.map((item) => `<div class="retry-note-item"><strong>${item.status}</strong>${item.note}</div>`).join('')}
                 </div>
-            ` : '<div class="run-empty">Add review notes to rejected or approved results to get better retry guidance.</div>'}
+            ` : '<div class="run-empty">거부 또는 승인된 결과에 검수 메모를 남기면 더 나은 재시도 제안을 받을 수 있습니다.</div>'}
         </div>
     `;
 
@@ -1820,7 +1835,7 @@ function applyRetrySuggestionToPlanner() {
     }
 
     updateGenerationModeNote();
-    setActiveTab('prompts');
+    setActiveTab('compose');
     showToast('Retry suggestion applied to planner', 'success');
 }
 
@@ -1889,7 +1904,7 @@ async function startRetrySuggestionRun() {
     try {
         const preflight = await fetchPreflightValidation(payload);
         if ((preflight.errors || []).length > 0) {
-            setActiveTab('prompts');
+            setActiveTab('compose');
             showToast(preflight.errors[0], 'error');
             return;
         }
@@ -1952,7 +1967,12 @@ function renderRunViewState() {
     const displayedSummary = AppState.displayedRunSummary
         || AppState.recentRuns.find((item) => item.runId === displayedRunId)
         || null;
-    const viewingHistorical = Boolean(displayedRunId && liveRunId && displayedRunId !== liveRunId);
+    const viewingHistorical = Boolean(
+        displayedRunId
+        && displayedSummary
+        && !displayedSummary.isRunning
+        && (!liveRunId || displayedRunId !== liveRunId)
+    );
     const hasDisplayed = Boolean(displayedRunId);
 
     if (!hasDisplayed && !liveRunId) {
@@ -1961,19 +1981,21 @@ function renderRunViewState() {
     }
 
     const copyRunHandoffButton = displayedSummary?.mode === 'assisted'
-        ? '<button class="btn btn-secondary" id="copy-run-codex-handoff-btn">Copy Run Handoff</button>'
+        ? '<button class="btn btn-secondary" id="copy-run-codex-handoff-btn">Run handoff 복사</button>'
         : '';
 
     if (viewingHistorical) {
         container.innerHTML = `
             <div class="run-view-banner historical">
                 <div class="run-view-copy">
-                    <strong>Viewing historical run</strong>
-                    <span>Run ${String(displayedRunId || '').slice(0, 8)} is open. Live run ${String(liveRunId || '').slice(0, 8)} is still tracked separately.</span>
+                    <strong>과거 run을 보고 있습니다</strong>
+                    <span>${liveRunId
+                        ? `현재 Run ${String(displayedRunId || '').slice(0, 8)} 을 보고 있습니다. Live run ${String(liveRunId || '').slice(0, 8)} 은 별도로 계속 추적 중입니다.`
+                        : `저장된 Run ${String(displayedRunId || '').slice(0, 8)} 스냅샷을 보고 있습니다.`}</span>
                 </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
                     ${copyRunHandoffButton}
-                    <button class="btn btn-secondary" id="follow-live-run-btn">Back To Live Run</button>
+                    ${liveRunId ? '<button class="btn btn-secondary" id="follow-live-run-btn">Live Run으로 돌아가기</button>' : ''}
                 </div>
             </div>
         `;
@@ -1983,12 +2005,12 @@ function renderRunViewState() {
     }
 
     const mode = displayedSummary?.mode || 'direct';
-    const statusText = displayedSummary?.isRunning ? 'running' : (displayedSummary?.finishStatus || 'ready');
+    const statusText = displayedSummary?.isRunning ? '실행 중' : formatFinishStatus(displayedSummary?.finishStatus || 'ready');
     container.innerHTML = `
         <div class="run-view-banner live">
             <div class="run-view-copy">
-                <strong>${liveRunId ? 'Following live run' : 'Viewing run'}</strong>
-                <span>${displayedRunId ? `Run ${String(displayedRunId).slice(0, 8)}` : 'No selected run'} · ${mode} · ${statusText}</span>
+                <strong>${liveRunId ? '실시간 run 추적 중' : 'run 확인 중'}</strong>
+                <span>${displayedRunId ? `Run ${String(displayedRunId).slice(0, 8)}` : '선택된 run 없음'} · ${mode === 'direct' ? '직접 렌더' : '보조 렌더'} · ${statusText}</span>
             </div>
             ${copyRunHandoffButton}
         </div>
@@ -2055,10 +2077,24 @@ function run_record_to_status_client(record) {
     };
 }
 
+function updateOutputsAdvancedVisibility() {
+    const section = Utils.el(CONFIG.DOM.OUTPUTS_ADVANCED_SECTION);
+    const button = Utils.el(CONFIG.DOM.OUTPUTS_ADVANCED_TOGGLE);
+    if (!section || !button) return;
+    section.classList.toggle('is-collapsed', !AppState.outputsAdvancedVisible);
+    button.textContent = AppState.outputsAdvancedVisible ? '고급 패널 숨기기' : '고급 보기';
+}
+
+function toggleOutputsAdvanced() {
+    AppState.outputsAdvancedVisible = !AppState.outputsAdvancedVisible;
+    updateOutputsAdvancedVisibility();
+}
+
 function renderRunComparePanel() {
     const panel = Utils.el(CONFIG.DOM.RUN_COMPARE_PANEL);
     const grid = Utils.el(CONFIG.DOM.RUN_COMPARE_GRID);
     if (!panel || !grid) return;
+    updateOutputsAdvancedVisibility();
 
     const buckets = getCompareRunBuckets();
     const directRun = buckets.find((item) => item.key === 'direct')?.run || null;
@@ -2067,7 +2103,7 @@ function renderRunComparePanel() {
     if (!hasAny) {
         renderRunViewState();
         renderRunCodexHandoffPreview();
-        grid.innerHTML = '<div class="run-empty">No recent direct or assisted runs yet.</div>';
+        grid.innerHTML = '<div class="run-empty">최근 직접 렌더 또는 보조 렌더 run이 아직 없습니다.</div>';
         renderRunDiffSummary(null, null);
         renderRetrySuggestionPanel();
         renderRetryLineagePanel();
@@ -2082,7 +2118,7 @@ function renderRunComparePanel() {
                     <div class="run-compare-top">
                         <div class="run-compare-title">
                             <strong>${title}</strong>
-                            <span class="run-compare-sub">No recent ${key} run</span>
+                            <span class="run-compare-sub">최근 ${key === 'direct' ? '직접 렌더' : '보조 렌더'} run이 없습니다</span>
                         </div>
                         <div class="run-compare-badges">
                             <span class="mode-badge ${key}">${key}</span>
@@ -2093,14 +2129,14 @@ function renderRunComparePanel() {
         }
 
         const activeClass = run.runId === AppState.displayedRunId ? 'active' : '';
-        const statusText = run.isRunning ? 'running' : (run.finishStatus || 'unknown');
-        const sceneText = run.sceneSummary || 'No scene summary';
-        const templateText = run.templateId || 'no template';
+        const statusText = run.isRunning ? '실행 중' : formatFinishStatus(run.finishStatus || 'unknown');
+        const sceneText = run.sceneSummary || '장면 요약 없음';
+        const templateText = run.templateId || '템플릿 없음';
         const outputTypes = (run.outputTypes || []).join(', ') || '-';
         const review = run.reviewSummary || {};
         const reviewText = `A${review.approved || 0} / R${review.rejected || 0} / Notes ${review.noted || 0}`;
-        const noteText = (review.noteHighlights || []).join(' | ') || 'No review notes';
-        const retryText = run.retry?.fromRunId ? `retry from ${String(run.retry.fromRunId).slice(0, 8)}` : 'root run';
+        const noteText = (review.noteHighlights || []).join(' | ') || '검수 메모 없음';
+        const retryText = run.retry?.fromRunId ? `재시도 시작점 ${String(run.retry.fromRunId).slice(0, 8)}` : '루트 run';
         return `
             <div class="run-compare-card ${activeClass}">
                 <div class="run-compare-top">
@@ -2115,9 +2151,9 @@ function renderRunComparePanel() {
                 </div>
                 <div class="run-compare-meta">
                     <span>Run ${String(run.runId || '').slice(0, 8)}</span>
-                    <span>${run.succeeded}/${run.total || 0} success</span>
-                    <span>${run.referenceCount || 0} refs</span>
-                    <span>${run.promptCount || 0} prompts</span>
+                    <span>${run.succeeded}/${run.total || 0}개 성공</span>
+                    <span>레퍼런스 ${run.referenceCount || 0}개</span>
+                    <span>프롬프트 ${run.promptCount || 0}개</span>
                     <span>${templateText}</span>
                     <span>${outputTypes}</span>
                     <span>${retryText}</span>
@@ -2126,7 +2162,7 @@ function renderRunComparePanel() {
                 <div class="run-compare-sub">${reviewText}</div>
                 <div class="run-compare-sub">${noteText}</div>
                 <div class="run-compare-actions">
-                    <button class="btn btn-secondary run-load-btn" data-run-id="${run.runId}">View Run</button>
+                    <button class="btn btn-secondary run-load-btn" data-run-id="${run.runId}">Run 보기</button>
                 </div>
             </div>
         `;
@@ -2153,6 +2189,7 @@ function renderSceneTemplates() {
     if (!AppState.sceneTemplates.length) {
         list.innerHTML = '';
         empty.style.display = '';
+        updateComposeSelectionSummary();
         lucide.createIcons();
         return;
     }
@@ -2164,11 +2201,11 @@ function renderSceneTemplates() {
                 <strong>${template.name}</strong>
                 <span class="pill">${getSceneTemplateCompositionLabel(template.composition)}</span>
             </div>
-            <p>${template.description || 'No description'}</p>
+            <p>${template.description || '설명 없음'}</p>
             <div class="scene-template-meta">
-                <span>${(template.referenceAssetPaths || []).length} refs</span>
+                <span>레퍼런스 ${(template.referenceAssetPaths || []).length}개</span>
                 <span>${template.globalAspectRatio || CONFIG.DEFAULTS.AR}</span>
-                <span>${template.steps || CONFIG.DEFAULTS.STEPS} steps</span>
+                <span>steps ${template.steps || CONFIG.DEFAULTS.STEPS}</span>
             </div>
             <div class="scene-template-assets">${summarizeTemplateSceneDraft(template)}</div>
             <div class="scene-template-assets">${summarizeTemplateAssets(template)}</div>
@@ -2185,13 +2222,14 @@ function renderSceneTemplates() {
         });
     });
 
+    updateComposeSelectionSummary();
     lucide.createIcons();
 }
 
 async function saveSceneTemplate() {
     const payload = getSceneTemplateEditorState();
     if (!payload.name) {
-        showToast('Template name is required', 'error');
+        showToast('템플릿 이름이 필요합니다', 'error');
         return;
     }
 
@@ -2209,14 +2247,14 @@ async function saveSceneTemplate() {
         });
         const data = await resp.json();
         if (!resp.ok || data.detail) {
-            throw new Error(data.detail || 'Failed to save template');
+            throw new Error(data.detail || '템플릿 저장에 실패했습니다');
         }
         AppState.activeSceneTemplateId = data.template?.id || null;
         await loadSceneTemplates();
         fillSceneTemplateEditor(data.template || null);
-        showToast('Scene template saved', 'success');
+        showToast('장면 템플릿을 저장했습니다', 'success');
     } catch (e) {
-        showToast(`Template save failed: ${e.message}`, 'error');
+        showToast(`템플릿 저장 실패: ${e.message}`, 'error');
     } finally {
         if (saveBtn) saveBtn.disabled = false;
     }
@@ -2225,7 +2263,7 @@ async function saveSceneTemplate() {
 async function applySceneTemplate() {
     const template = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId);
     if (!template) {
-        showToast('Select a scene template first', 'error');
+        showToast('먼저 장면 템플릿을 선택하세요', 'error');
         return;
     }
 
@@ -2249,16 +2287,16 @@ async function applySceneTemplate() {
 
     const missingCount = (template.referenceAssetPaths || []).length - selectedAssets.length;
     if (missingCount > 0) {
-        showToast(`Template applied with ${missingCount} missing assets`, 'warning');
+        showToast(`누락된 자산 ${missingCount}개를 제외하고 템플릿을 적용했습니다`, 'warning');
     } else {
-        showToast('Scene template applied', 'success');
+        showToast('장면 템플릿을 적용했습니다', 'success');
     }
 }
 
 async function deleteSceneTemplate() {
     const template = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId);
     if (!template) {
-        showToast('Select a scene template first', 'error');
+        showToast('먼저 장면 템플릿을 선택하세요', 'error');
         return;
     }
 
@@ -2271,14 +2309,14 @@ async function deleteSceneTemplate() {
         });
         const data = await resp.json();
         if (!resp.ok || data.detail) {
-            throw new Error(data.detail || 'Failed to delete template');
+            throw new Error(data.detail || '템플릿 삭제에 실패했습니다');
         }
         AppState.activeSceneTemplateId = null;
         fillSceneTemplateEditor(null);
         await loadSceneTemplates();
-        showToast('Scene template deleted', 'success');
+        showToast('장면 템플릿을 삭제했습니다', 'success');
     } catch (e) {
-        showToast(`Template delete failed: ${e.message}`, 'error');
+        showToast(`템플릿 삭제 실패: ${e.message}`, 'error');
     } finally {
         if (deleteBtn) deleteBtn.disabled = false;
     }
@@ -2291,13 +2329,13 @@ function getSingleSelectReferenceSlots() {
 
 function getReferenceSlotLabel(slot) {
     const labels = {
-        identity: 'Identity',
-        emotion: 'Emotion',
-        role: 'Role',
-        scene: 'Scene',
-        style: 'Style',
-        prop: 'Prop',
-        extra: 'Extra'
+        identity: '정체성',
+        emotion: '감정',
+        role: '역할',
+        scene: '장면',
+        style: '스타일',
+        prop: '소품',
+        extra: '기타'
     };
     return labels[slot] || slot;
 }
@@ -2319,7 +2357,7 @@ function renderReferenceDefinitionFiles() {
         return;
     }
     container.innerHTML = `
-        <label>Definition Files</label>
+        <label>정의 파일</label>
         <div class="reference-definition-list">
             ${AppState.referenceDefinitions.map((item) => `<span class="reference-definition-chip">${item.relativePath}</span>`).join('')}
         </div>
@@ -2335,7 +2373,7 @@ function renderReferenceUploadPresets() {
         return;
     }
     container.innerHTML = `
-        <label>Quick Paths</label>
+        <label>빠른 경로</label>
         <div class="reference-preset-chips">
             ${presets.map((preset) => `
                 <button type="button" class="reference-preset-chip" data-path="${preset.path}">
@@ -2402,11 +2440,13 @@ function updateReferenceSelectionSummary() {
         const summary = Object.entries(grouped).map(([slot, items]) => {
             const label = getReferenceSlotLabel(slot);
             const names = items.map((asset) => asset.name).slice(0, 2).join(', ');
-            const suffix = items.length > 2 ? ` 외 ${items.length - 2}개` : '';
+            const suffix = items.length > 2 ? ` +${items.length - 2}` : '';
             return `${label}: ${names}${suffix}`;
         });
         previewEl.textContent = summary.length > 0 ? summary.join(' | ') : '선택된 레퍼런스 없음';
     }
+
+    updateComposeSelectionSummary();
 }
 
 function toggleReferenceAsset(relativePath, checked) {
@@ -2637,13 +2677,29 @@ function renderPromptTable(prompts) {
     document.querySelectorAll('.prompt-checkbox').forEach(cb => { cb.onchange = updateSelectionCounts; });
 }
 
+function buildComposeSelectionSummary() {
+    const checkedPrompts = document.querySelectorAll('.prompt-checkbox:checked').length;
+    const referenceCount = AppState.selectedReferenceAssets.length;
+    const activeTemplate = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId);
+    const templateLabel = activeTemplate ? activeTemplate.name : '템플릿 없음';
+    return `${checkedPrompts}개 프롬프트 | ${referenceCount}개 레퍼런스 | ${templateLabel}`;
+}
+
+function updateComposeSelectionSummary() {
+    const selEl = document.getElementById(CONFIG.DOM.SELECTION_COUNT);
+    if (selEl) {
+        selEl.innerText = buildComposeSelectionSummary();
+    }
+}
+
 function updateSelectionCounts() {
     const checked = document.querySelectorAll('.prompt-checkbox:checked').length;
-    const selEl = document.getElementById(CONFIG.DOM.SELECTION_COUNT);
-    if (selEl) selEl.innerText = `${checked}개 선택됨`;
+    updateComposeSelectionSummary();
     const btn = document.getElementById(CONFIG.DOM.FAB_BTN);
     if (btn) btn.innerHTML = `<i data-lucide="play"></i> 선택 항목 생성 (${checked})`;
     lucide.createIcons();
+    updateCodexHandoffPanel();
+    refreshConfirmPreflight();
 }
 
 function toggleAllPrompts(source) {
@@ -2695,20 +2751,20 @@ function updateGenerationModeNote() {
     if (!noteEl) return;
     const providerLabel = getCurrentProviderInfo()?.label || getCurrentProviderId();
     const operatorMode = getOperatorMode();
-    const operatorLabel = operatorMode === 'codex-conversation' ? 'Codex conversation' : 'Studio operator';
+    const operatorLabel = operatorMode === 'codex-conversation' ? 'Codex 대화 연동' : 'Studio 운영';
     updateOperatorModeAvailability();
 
     if (getGenerationMode() === 'direct') {
-        noteEl.textContent = `Direct keeps the current prompt-first workflow with ${operatorLabel} and sends it to ${providerLabel}.`;
+        noteEl.textContent = `직접 렌더는 현재 prompt-first 흐름을 유지하고 ${operatorLabel} 방식으로 ${providerLabel}에 전달합니다.`;
         return;
     }
 
     const activeTemplate = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId);
-    const templateName = activeTemplate?.name || 'no template selected';
+    const templateName = activeTemplate?.name || '선택된 템플릿 없음';
     const referenceCount = AppState.selectedReferenceAssets.length;
     const sceneDraft = getScenePlannerState();
     const hasSceneDraft = Object.values(sceneDraft).some(Boolean);
-    noteEl.textContent = `Assisted builds a scene spec from the current prompts, ${referenceCount} references, ${templateName}, and ${hasSceneDraft ? 'scene planner fields' : 'derived defaults'}, then sends it to ${providerLabel} using ${operatorLabel}${operatorMode === 'codex-conversation' ? ' and exposes a handoff payload for chat.' : '.'}`;
+    noteEl.textContent = `보조 렌더는 현재 프롬프트, 레퍼런스 ${referenceCount}개, ${templateName}, ${hasSceneDraft ? 'Scene Planner 입력' : '기본 파생값'}으로 장면 사양을 만든 뒤 ${operatorLabel} 방식으로 ${providerLabel}에 전달합니다${operatorMode === 'codex-conversation' ? ' 그리고 대화용 handoff도 함께 제공합니다.' : '.'}`;
 }
 
 function buildSceneActorsFromReferences() {
@@ -2815,18 +2871,18 @@ function renderPreflightValidation(result) {
     const referenceCount = result.summary?.referenceCount || 0;
     const providerLabel = result.summary?.providerLabel || getCurrentProviderInfo()?.label || getCurrentProviderId();
     const operatorMode = result.summary?.operatorMode || getOperatorMode();
-    const operatorLabel = operatorMode === 'codex-conversation' ? 'Codex conversation' : 'Studio operator';
+    const operatorLabel = operatorMode === 'codex-conversation' ? 'Codex 대화 연동' : 'Studio 운영';
     const effectiveCapabilities = result.summary?.effectiveCapabilities || {};
     const capabilityChips = [
-        `Renderer: ${providerLabel}`,
-        `Operator: ${operatorLabel}`,
-        effectiveCapabilities.supportsDirectGeneration ? 'Direct enabled' : 'Direct limited',
-        effectiveCapabilities.supportsAssistedGeneration ? 'Assisted enabled' : 'Assisted limited',
-        effectiveCapabilities.supportsSceneSpec ? 'Scene spec enabled' : 'Scene spec disabled',
-        effectiveCapabilities.supportsReferenceAssets ? 'Reference conditioning enabled' : 'Reference planning only'
+        `렌더러: ${providerLabel}`,
+        `운영 방식: ${operatorLabel}`,
+        effectiveCapabilities.supportsDirectGeneration ? '직접 렌더 가능' : '직접 렌더 제한',
+        effectiveCapabilities.supportsAssistedGeneration ? '보조 렌더 가능' : '보조 렌더 제한',
+        effectiveCapabilities.supportsSceneSpec ? 'Scene spec 사용 가능' : 'Scene spec 비활성',
+        effectiveCapabilities.supportsReferenceAssets ? '레퍼런스 conditioning 가능' : '레퍼런스는 planning 전용'
     ];
     summary.innerHTML = `
-        <strong>${mode}</strong> mode, ${estimatedImages} planned renders, ${referenceCount} selected references
+        <strong>${mode === 'direct' ? '직접 렌더' : '보조 렌더'}</strong> 모드, 예정 렌더 ${estimatedImages}장, 선택된 레퍼런스 ${referenceCount}개
         <div class="preflight-summary-meta">
             ${capabilityChips.map((item) => `<span class="preflight-meta-chip">${item}</span>`).join('')}
         </div>
@@ -2857,11 +2913,14 @@ async function fetchPreflightValidation(payload) {
 }
 
 async function refreshConfirmPreflight() {
-    const modal = Utils.el(CONFIG.MODALS.CONFIRM);
-    if (!modal || modal.style.display !== 'flex') return null;
     const selectedIdxs = Array.from(document.querySelectorAll('.prompt-checkbox:checked')).map((cb) => parseInt(cb.dataset.idx, 10));
     const selectedPrompts = AppState.currentPrompts.filter((_, i) => selectedIdxs.includes(i));
-    if (!selectedPrompts.length) return null;
+    if (!selectedPrompts.length) {
+        AppState.lastPreflight = null;
+        renderPreflightValidation(null);
+        updateCodexHandoffPanel([]);
+        return null;
+    }
     try {
         return await fetchPreflightValidation(buildGenerationPayload(selectedPrompts));
     } catch (e) {
@@ -2904,7 +2963,6 @@ async function openConfirmModal() {
 
 function closeConfirmModal() {
     document.getElementById(CONFIG.MODALS.CONFIRM).style.display = 'none';
-    updateCodexHandoffPanel([]);
 }
 
 async function confirmStartBatch() {
@@ -3179,12 +3237,12 @@ function openImageDetail(index) {
 
     const meta = Utils.el('detail-meta');
     meta.innerHTML = `
-        <div><strong>Status:</strong> <span class="badge ${item.status}">${item.status}</span></div>
-        <div><strong>Mode:</strong> <span class="mode-badge ${runMode}">${runMode}</span></div>
-        <div><strong>Type:</strong> ${item.type} (${item.width}x${item.height})</div>
-        <div><strong>Duration:</strong> ${item.duration ? item.duration.toFixed(1) + 's' : 'N/A'}</div>
-        <div><strong>Review:</strong> <span class="review-badge ${item.review_status || 'pending'}">${item.review_status || 'pending'}</span></div>
-        <div><strong>References:</strong> ${(item._reference_assets || []).length} selected</div>
+        <div><strong>상태:</strong> <span class="badge ${item.status}">${item.status}</span></div>
+        <div><strong>모드:</strong> <span class="mode-badge ${runMode}">${runMode}</span></div>
+        <div><strong>타입:</strong> ${item.type} (${item.width}x${item.height})</div>
+        <div><strong>소요 시간:</strong> ${item.duration ? item.duration.toFixed(1) + 's' : '없음'}</div>
+        <div><strong>검수:</strong> <span class="review-badge ${item.review_status || 'pending'}">${item.review_status || 'pending'}</span></div>
+        <div><strong>레퍼런스:</strong> ${(item._reference_assets || []).length}개 선택</div>
     `;
 
     Utils.el('detail-prompt-text').textContent = item.positive || item.prompt || '';

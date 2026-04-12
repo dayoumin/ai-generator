@@ -695,26 +695,26 @@ def compare_run_summaries(parent_summary: Dict[str, Any], child_summary: Dict[st
     score_delta = round(compute_run_quality_score(child_summary) - compute_run_quality_score(parent_summary), 2)
 
     if score_delta > 0.5:
-        label = "improved"
+        label = "개선됨"
     elif score_delta < -0.5:
-        label = "worse"
+        label = "악화됨"
     else:
-        label = "unchanged"
+        label = "유지됨"
 
     summary_bits: List[str] = []
     if approved_delta > 0:
-        summary_bits.append("more approved outputs")
+        summary_bits.append("승인된 결과가 늘어남")
     if rejected_delta < 0:
-        summary_bits.append("fewer rejected outputs")
+        summary_bits.append("거부된 결과가 줄어듦")
     if success_delta > 0:
-        summary_bits.append("more successful renders")
+        summary_bits.append("성공 렌더 수가 늘어남")
     if label == "worse" and not summary_bits:
         if rejected_delta > 0:
-            summary_bits.append("more rejected outputs")
+            summary_bits.append("거부된 결과가 늘어남")
         if success_delta < 0:
-            summary_bits.append("fewer successful renders")
+            summary_bits.append("성공 렌더 수가 줄어듦")
     if not summary_bits:
-        summary_bits.append("review totals stayed close to the previous run")
+        summary_bits.append("검수 합계가 이전 run과 비슷함")
 
     return {
         "label": label,
@@ -749,26 +749,26 @@ def summarize_run_request_changes(parent_record: Dict[str, Any], child_record: D
         if before_text and after_text:
             detail = f"{label}: {before_text} -> {after_text}"
         elif after_text:
-            detail = f"{label}: added {after_text}"
+            detail = f"{label}: 추가됨 {after_text}"
         else:
-            detail = f"{label}: removed"
+            detail = f"{label}: 제거됨"
         changes.append({
             "field": field,
             "label": label,
             "detail": detail,
         })
 
-    add_change("templateId", parent_request.get("templateId"), child_request.get("templateId"), "template")
-    add_change("scene.situation", parent_scene.get("situation"), child_scene.get("situation"), "situation")
-    add_change("scene.interaction", parent_scene.get("interaction"), child_scene.get("interaction"), "interaction")
-    add_change("scene.background", parent_scene.get("background"), child_scene.get("background"), "background")
-    add_change("scene.location", parent_scene.get("location"), child_scene.get("location"), "location")
-    add_change("visual.lighting", parent_visual.get("lighting"), child_visual.get("lighting"), "lighting")
-    add_change("stylePrompt", parent_generation.get("extraPositive"), child_generation.get("extraPositive"), "style prompt")
-    add_change("negativePrompt", parent_generation.get("negativePrompt"), child_generation.get("negativePrompt"), "negative prompt")
-    add_change("aspectRatio", parent_generation.get("aspectRatio"), child_generation.get("aspectRatio"), "aspect ratio")
+    add_change("templateId", parent_request.get("templateId"), child_request.get("templateId"), "템플릿")
+    add_change("scene.situation", parent_scene.get("situation"), child_scene.get("situation"), "상황")
+    add_change("scene.interaction", parent_scene.get("interaction"), child_scene.get("interaction"), "상호작용")
+    add_change("scene.background", parent_scene.get("background"), child_scene.get("background"), "배경")
+    add_change("scene.location", parent_scene.get("location"), child_scene.get("location"), "위치")
+    add_change("visual.lighting", parent_visual.get("lighting"), child_visual.get("lighting"), "조명")
+    add_change("stylePrompt", parent_generation.get("extraPositive"), child_generation.get("extraPositive"), "스타일 프롬프트")
+    add_change("negativePrompt", parent_generation.get("negativePrompt"), child_generation.get("negativePrompt"), "네거티브 프롬프트")
+    add_change("aspectRatio", parent_generation.get("aspectRatio"), child_generation.get("aspectRatio"), "비율")
     add_change("steps", parent_generation.get("steps"), child_generation.get("steps"), "steps")
-    add_change("batchCount", parent_generation.get("batchCount"), child_generation.get("batchCount"), "repeat")
+    add_change("batchCount", parent_generation.get("batchCount"), child_generation.get("batchCount"), "반복 수")
 
     parent_refs = [
         str(item.get("path") or item.get("relativePath") or item.get("name") or "").strip()
@@ -785,34 +785,34 @@ def summarize_run_request_changes(parent_record: Dict[str, Any], child_record: D
     if added_refs:
         changes.append({
             "field": "referenceAssets.added",
-            "label": "references",
-            "detail": "added refs: " + ", ".join(added_refs[:3]),
+            "label": "레퍼런스",
+            "detail": "추가된 레퍼런스: " + ", ".join(added_refs[:3]),
         })
     if removed_refs:
         changes.append({
             "field": "referenceAssets.removed",
-            "label": "references",
-            "detail": "removed refs: " + ", ".join(removed_refs[:3]),
+            "label": "레퍼런스",
+            "detail": "제거된 레퍼런스: " + ", ".join(removed_refs[:3]),
         })
 
     parent_prompts = [str(item.get("prompt", "") or "").strip() for item in (parent_request.get("prompts") or []) if str(item.get("prompt", "") or "").strip()]
     child_prompts = [str(item.get("prompt", "") or "").strip() for item in (child_request.get("prompts") or []) if str(item.get("prompt", "") or "").strip()]
     if parent_prompts != child_prompts:
         if not parent_prompts and child_prompts:
-            prompt_detail = "prompts added"
+            prompt_detail = "프롬프트 추가됨"
         elif parent_prompts and not child_prompts:
-            prompt_detail = "prompts removed"
+            prompt_detail = "프롬프트 제거됨"
         else:
-            prompt_detail = "prompts changed"
+            prompt_detail = "프롬프트 변경됨"
         changes.append({
             "field": "prompts",
-            "label": "prompts",
+            "label": "프롬프트",
             "detail": prompt_detail,
         })
 
     return {
         "count": len(changes),
-        "summary": ", ".join(item["detail"] for item in changes[:4]) if changes else "No request changes detected.",
+        "summary": ", ".join(item["detail"] for item in changes[:4]) if changes else "요청 변경 사항이 없습니다.",
         "items": changes[:8],
     }
 
@@ -1037,11 +1037,11 @@ def build_retry_suggestion(record: Dict[str, Any]) -> Dict[str, Any]:
     approved_notes = [item["note"] for item in review_notes if item["status"] == "approved"]
     summary_bits: List[str] = []
     if rejected_notes:
-        summary_bits.append(f"Address {len(rejected_notes)} rejected review notes.")
+        summary_bits.append(f"거부된 검수 메모 {len(rejected_notes)}개를 우선 수정합니다.")
     if approved_notes:
-        summary_bits.append(f"Preserve {len(approved_notes)} approved qualities.")
+        summary_bits.append(f"승인된 강점 {len(approved_notes)}개는 유지합니다.")
     if not summary_bits:
-        summary_bits.append("No review notes yet. Retry suggestions are based on current scene spec only.")
+        summary_bits.append("검수 메모가 아직 없어 현재 장면 사양만 기준으로 재시도 제안을 만들었습니다.")
 
     if not any(scene_patch.values()):
         scene_patch["situation"] = scene.get("situation", "") or ""
@@ -1200,9 +1200,9 @@ def build_codex_handoff_payload_from_record(
             "metadata": request.get("metadata") or {},
         },
         "codexAsk": (
-            "Use this run state and review feedback to refine the next image generation result with stronger consistency, scene clarity, and character accuracy."
+            "이 run 상태와 검수 피드백을 바탕으로 다음 이미지 생성 결과의 일관성, 장면 명확도, 캐릭터 정확도를 높이세요."
             if str(record.get("mode", "direct") or "direct").lower() == "assisted"
-            else "Use this direct run state to refine prompts or propose a stronger assisted scene setup before rendering."
+            else "이 직접 렌더 run 상태를 바탕으로 프롬프트를 보정하거나 렌더 전에 더 강한 보조 렌더 장면 구성을 제안하세요."
         ),
     }
     return payload
@@ -1225,51 +1225,51 @@ def build_codex_handoff_message(payload: Dict[str, Any]) -> str:
         scene_draft.get("situation")
         or scene_data.get("situation")
         or scene_data.get("background")
-        or "none"
+        or "없음"
     )
     review_summary = run_context.get("reviewSummary", {}) or {}
     review_summary_text = f"A{review_summary.get('approved', 0)} / R{review_summary.get('rejected', 0)} / N{review_summary.get('noted', 0)}"
     review_notes = run_context.get("reviewNotes") or []
-    review_notes_text = " | ".join(f"{item.get('status', 'pending')}: {item.get('note', '')}" for item in review_notes) or "none"
+    review_notes_text = " | ".join(f"{item.get('status', 'pending')}: {item.get('note', '')}" for item in review_notes) or "없음"
     retry_patch = retry_suggestion.get("sceneDraftPatch", {}) or {}
     retry_patch_text = " | ".join(
         f"{key}={value}" for key, value in retry_patch.items() if str(value or "").strip()
-    ) or "none"
-    retry_hints_text = " | ".join(retry_suggestion.get("promptHints") or []) or "none"
-    retry_style_text = " | ".join(retry_suggestion.get("stylePromptAdditions") or []) or "none"
-    retry_negative_text = " | ".join(retry_suggestion.get("negativePromptAdditions") or []) or "none"
-    retry_lineage_text = "none"
+    ) or "없음"
+    retry_hints_text = " | ".join(retry_suggestion.get("promptHints") or []) or "없음"
+    retry_style_text = " | ".join(retry_suggestion.get("stylePromptAdditions") or []) or "없음"
+    retry_negative_text = " | ".join(retry_suggestion.get("negativePromptAdditions") or []) or "없음"
+    retry_lineage_text = "없음"
     if retry_lineage:
-        latest_outcome = (retry_lineage.get("latestOutcome", {}) or {}).get("label") or "n/a"
-        retry_lineage_text = f"{retry_lineage.get('runCount', 0)} runs, latest outcome: {latest_outcome}"
-    template_text = "none selected"
+        latest_outcome = (retry_lineage.get("latestOutcome", {}) or {}).get("label") or "없음"
+        retry_lineage_text = f"{retry_lineage.get('runCount', 0)}개 run, 최신 결과: {latest_outcome}"
+    template_text = "선택 없음"
     if template:
-        template_text = f"{template.get('name')} ({template.get('composition') or 'custom'})"
+        template_text = f"{template.get('name')} ({template.get('composition') or '사용자 지정'})"
     lines = [
-        "Use the following studio state as the source of truth.",
-        f"Project: {payload.get('project', {}).get('name') or payload.get('project', {}).get('id') or 'unknown'}",
-        f"Generation mode: {execution.get('generationMode') or 'assisted'}",
-        f"Operator mode: {execution.get('operatorMode') or 'codex-conversation'}",
-        f"Renderer: {execution.get('providerLabel') or execution.get('providerId') or 'unknown'}",
-        f"Template: {template_text}",
-        f"Scene cue: {scene_cue}",
-        f"Selected prompts: {prompt_count}",
-        f"Selected references: {reference_count}",
-        f"Outputs: {output_types}",
-        f"Run context: {str(run_context.get('runId') or 'none')[:8]} ({run_context.get('mode') or 'unknown'})",
-        f"Review summary: {review_summary_text}",
-        f"Review notes: {review_notes_text}",
-        f"Retry suggestion: {retry_suggestion.get('summary') or 'none'}",
-        f"Retry scene patch: {retry_patch_text}",
-        f"Retry prompt hints: {retry_hints_text}",
-        f"Retry style additions: {retry_style_text}",
-        f"Retry negative additions: {retry_negative_text}",
-        f"Retry lineage: {retry_lineage_text}",
+        "아래 studio 상태를 기준 정보로 사용하세요.",
+        f"프로젝트: {payload.get('project', {}).get('name') or payload.get('project', {}).get('id') or '알 수 없음'}",
+        f"생성 모드: {execution.get('generationMode') or 'assisted'}",
+        f"운영 방식: {execution.get('operatorMode') or 'codex-conversation'}",
+        f"렌더러: {execution.get('providerLabel') or execution.get('providerId') or '알 수 없음'}",
+        f"템플릿: {template_text}",
+        f"장면 요약: {scene_cue}",
+        f"선택된 프롬프트: {prompt_count}",
+        f"선택된 레퍼런스: {reference_count}",
+        f"출력 타입: {output_types}",
+        f"Run 문맥: {str(run_context.get('runId') or '없음')[:8]} ({run_context.get('mode') or 'unknown'})",
+        f"검수 요약: {review_summary_text}",
+        f"검수 메모: {review_notes_text}",
+        f"재시도 제안: {retry_suggestion.get('summary') or '없음'}",
+        f"재시도 장면 패치: {retry_patch_text}",
+        f"재시도 프롬프트 힌트: {retry_hints_text}",
+        f"재시도 스타일 추가: {retry_style_text}",
+        f"재시도 네거티브 추가: {retry_negative_text}",
+        f"재시도 이력: {retry_lineage_text}",
         "",
-        "Task:",
-        payload.get("codexAsk") or "Use this state to create or refine the image generation result.",
+        "작업 요청:",
+        payload.get("codexAsk") or "이 상태를 기준으로 이미지 생성 결과를 만들거나 보정하세요.",
         "",
-        "When you reply, treat the JSON below as the exact handoff payload.",
+        "응답할 때 아래 JSON을 정확한 handoff payload로 사용하세요.",
         "",
         json.dumps(payload, indent=2, ensure_ascii=True),
     ]
@@ -1815,7 +1815,7 @@ def load_comfyui_workflow_template() -> Dict[str, Any]:
 class ComfyUIProviderAdapter(GenerationProviderAdapter):
     provider_id = "comfyui"
     label = "ComfyUI"
-    description = "Local ComfyUI renderer connected through the workflow API."
+    description = "워크플로 API로 연결된 로컬 ComfyUI 렌더러입니다."
 
     def capabilities(self) -> Dict[str, Any]:
         return {
@@ -1923,8 +1923,8 @@ class ApiImageProviderRuntime(ProviderRuntime):
 
 class ApiImageProviderAdapter(GenerationProviderAdapter):
     provider_id = "api-image"
-    label = "OpenAI Images"
-    description = "OpenAI image generation provider using the Images API."
+    label = "OpenAI 이미지"
+    description = "Images API를 사용하는 OpenAI 이미지 생성 렌더러입니다."
 
     def capabilities(self) -> Dict[str, Any]:
         return {
@@ -2287,7 +2287,7 @@ def get_provider_descriptor(provider_id: str) -> Dict[str, Any]:
         return {
             "id": provider_id,
             "label": provider_id,
-            "description": "Unknown or legacy provider id stored in run history.",
+            "description": "run 기록에 저장된 알 수 없거나 예전 렌더러 ID입니다.",
             "capabilities": {},
         }
     return {
@@ -2639,7 +2639,7 @@ def resolve_provider_id(project: str, requested_provider_id: Optional[str] = Non
         raise HTTPException(status_code=400, detail=f"Project '{project}' does not support provider '{provider_id}'")
     adapter = get_provider_adapter(provider_id)
     if not adapter.is_configured():
-        raise HTTPException(status_code=400, detail=adapter.configuration_error() or f"Provider '{provider_id}' is not configured")
+        raise HTTPException(status_code=400, detail=adapter.configuration_error() or f"렌더러 '{provider_id}'가 아직 설정되지 않았습니다.")
     return provider_id
 
 
@@ -2680,7 +2680,7 @@ def build_seed_capability_warnings(req: "StartBatchRequest") -> List[str]:
     provider_info = get_provider_descriptor(provider_id)
     if not provider_info.get("capabilities", {}).get("supportsDeterministicSeed", True):
         warnings.append(
-            f"Provider '{provider_id}' ignores custom prompt seed values. Runs may not be reproducible from seed inputs alone."
+            f"렌더러 '{provider_id}'는 사용자 지정 프롬프트 seed 값을 무시합니다. seed 값만으로는 같은 결과를 재현하기 어렵습니다."
         )
     return warnings
 
@@ -2854,49 +2854,49 @@ def build_preflight_validation(req: StartBatchRequest) -> Dict[str, Any]:
     info: List[str] = []
 
     if not output_types:
-        errors.append("Select at least one output type.")
+        errors.append("출력 타입을 최소 1개 이상 선택하세요.")
 
     if mode == "direct" and not effective_capabilities.get("supportsDirectGeneration", False):
-        errors.append(f"Provider '{provider_id}' does not support direct generation for this project.")
+        errors.append(f"렌더러 '{provider_id}'는 이 프로젝트에서 직접 렌더를 지원하지 않습니다.")
     if mode == "assisted" and not effective_capabilities.get("supportsAssistedGeneration", False):
-        errors.append(f"Provider '{provider_id}' does not support assisted generation for this project.")
+        errors.append(f"렌더러 '{provider_id}'는 이 프로젝트에서 보조 렌더를 지원하지 않습니다.")
     if mode == "assisted" and req.scene_spec and not effective_capabilities.get("supportsSceneSpec", False):
-        warnings.append(f"Provider '{provider_id}' does not use scene spec fields directly. Assisted mode will fall back to prompt composition only.")
+        warnings.append(f"렌더러 '{provider_id}'는 Scene spec 필드를 직접 사용하지 않습니다. 보조 렌더는 프롬프트 조합 중심으로 동작합니다.")
     warnings.extend(build_seed_capability_warnings(req))
     if operator_mode == "codex-conversation":
-        info.append("Operator: Codex conversation")
-        warnings.append("Codex conversation mode keeps this run aligned with chat-guided scene planning and review.")
+        info.append("운영 방식: Codex 대화 연동")
+        warnings.append("Codex 대화 연동 모드는 이 run을 채팅 기반 장면 기획과 검수 흐름에 맞춰 유지합니다.")
     else:
-        info.append("Operator: Studio")
+        info.append("운영 방식: Studio")
 
     required_slots = [slot for slot in reference_policy.get("requiredSlots", []) if slot]
     missing_required = [slot for slot in required_slots if slot_counts.get(slot, 0) == 0]
     if missing_required:
-        errors.append("Missing required reference slots: " + ", ".join(missing_required))
+        errors.append("필수 레퍼런스 슬롯이 비어 있습니다: " + ", ".join(missing_required))
 
     recommended_slots = [slot for slot in reference_policy.get("recommendedSlots", []) if slot]
     missing_recommended = [slot for slot in recommended_slots if slot_counts.get(slot, 0) == 0]
     if missing_recommended:
-        warnings.append("Recommended slots are empty: " + ", ".join(missing_recommended))
+        warnings.append("권장 레퍼런스 슬롯이 비어 있습니다: " + ", ".join(missing_recommended))
 
     if reference_assets and not effective_capabilities.get("supportsReferenceAssets", False):
         provider_supports_refs = provider_info.get("capabilities", {}).get("supportsReferenceAssets", False)
         if not provider_supports_refs:
-            warnings.append(f"Provider '{provider_id}' does not yet inject references into the renderer. The selected references will still shape assisted planning and review rules.")
+            warnings.append(f"렌더러 '{provider_id}'는 아직 레퍼런스를 직접 conditioning에 주입하지 않습니다. 그래도 선택한 레퍼런스는 보조 렌더 planning과 검수 기준에는 반영됩니다.")
         elif config.get("workflowMode") == "reference-first":
-            warnings.append(f"Project '{req.project}' keeps references in planning-first mode for provider '{provider_id}'. The selected references will still shape assisted planning and review rules.")
+            warnings.append(f"프로젝트 '{req.project}'는 렌더러 '{provider_id}'에서 레퍼런스를 planning-first 방식으로만 사용합니다. 그래도 선택한 레퍼런스는 보조 렌더 planning과 검수 기준에는 반영됩니다.")
         else:
-            warnings.append(f"Project '{req.project}' currently treats references as planning-only for provider '{provider_id}'.")
+            warnings.append(f"프로젝트 '{req.project}'는 렌더러 '{provider_id}'에서 레퍼런스를 planning 전용으로만 사용합니다.")
 
     if mode == "assisted":
         if not req.template_id:
-            warnings.append("Assisted mode works better with a scene template selected.")
+            warnings.append("보조 렌더는 장면 템플릿을 함께 선택할 때 더 안정적으로 동작합니다.")
         if not req.scene_spec:
-            warnings.append("No scene spec was provided. Assisted mode will fall back to prompt seeds only.")
+            warnings.append("Scene spec이 없어 보조 렌더가 프롬프트 기반 파생값만 사용합니다.")
         else:
             actor_count = len(req.scene_spec.actors or [])
             if actor_count == 0:
-                warnings.append("No actors were derived for the scene spec.")
+                warnings.append("Scene spec에서 유도된 인물이 없습니다.")
             if req.template_id:
                 template = next((item for item in load_project_templates(req.project) if item.get("id") == req.template_id), None)
                 composition = (template or {}).get("composition", "")
@@ -2921,12 +2921,12 @@ def build_preflight_validation(req: StartBatchRequest) -> Dict[str, Any]:
     prompt_count = len(req.prompts) if mode == "direct" else max(1, len(req.prompts) or 1)
     estimated_images = prompt_count * max(1, len(output_types)) * max(1, int(req.batch_count or 1))
     if estimated_images >= 20:
-        warnings.append(f"This run will attempt {estimated_images} renders. Consider reducing repeat count before testing.")
+        warnings.append(f"이번 run은 {estimated_images}장을 렌더링하려고 합니다. 테스트 전에는 반복 수를 줄이는 편이 좋습니다.")
 
-    info.append(f"Mode: {mode}")
-    info.append(f"Provider: {provider_info.get('label', provider_id)}")
-    info.append(f"Outputs: {', '.join(output_types)}")
-    info.append(f"Selected references: {len(reference_assets)}")
+    info.append(f"생성 모드: {mode}")
+    info.append(f"렌더러: {provider_info.get('label', provider_id)}")
+    info.append(f"출력 타입: {', '.join(output_types)}")
+    info.append(f"선택된 레퍼런스: {len(reference_assets)}개")
 
     return {
         "ok": len(errors) == 0,

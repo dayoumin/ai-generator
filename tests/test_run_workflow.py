@@ -133,7 +133,7 @@ class RunWorkflowTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(response.status_code, 200)
         self.assertFalse(payload["ok"])
-        self.assertTrue(any("ignores custom prompt seed values" in item for item in payload["warnings"]))
+        self.assertTrue(any("사용자 지정 프롬프트 seed 값을 무시합니다" in item for item in payload["warnings"]))
 
     def test_validate_generation_uses_resolved_provider_for_seed_warning_on_error(self):
         adapter = app.PROVIDER_REGISTRY["api-image"]
@@ -166,7 +166,7 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(payload["ok"])
         self.assertIn("Codex conversation operator requires assisted mode", payload["errors"][0])
-        self.assertTrue(any("ignores custom prompt seed values" in item for item in payload["warnings"]))
+        self.assertTrue(any("사용자 지정 프롬프트 seed 값을 무시합니다" in item for item in payload["warnings"]))
 
     def test_validate_generation_rejects_codex_operator_in_direct_mode(self):
         response = self.client.post("/api/generation/validate", json={
@@ -200,7 +200,7 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertIn("providers", payload)
         self.assertIn("comfyui", payload["providers"])
         self.assertIn("api-image", payload["providers"])
-        self.assertEqual(payload["providers"]["api-image"]["label"], "OpenAI Images")
+        self.assertEqual(payload["providers"]["api-image"]["label"], "OpenAI 이미지")
         self.assertEqual(payload["providers"]["api-image"]["status"], "not-configured")
         self.assertIn("configured", payload["providers"]["api-image"])
         self.assertIn("available", payload["providers"]["api-image"])
@@ -272,7 +272,7 @@ class RunWorkflowTests(unittest.TestCase):
         child_item = next(item for item in payload["items"] if item["runId"] == "lineage-child")
         self.assertEqual(child_item["retry"]["fromRunId"], "lineage-root")
         self.assertGreater(child_item["changesFromParent"]["count"], 0)
-        self.assertIn("situation:", child_item["changesFromParent"]["summary"])
+        self.assertIn("상황:", child_item["changesFromParent"]["summary"])
 
     def test_runs_api_summarizes_camel_case_retry_metadata(self):
         record = self.write_run("camel-retry-run")

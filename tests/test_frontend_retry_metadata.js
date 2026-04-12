@@ -7,14 +7,14 @@ const appJsPath = path.join(__dirname, '..', 'static', 'js', 'app.js');
 const source = fs.readFileSync(appJsPath, 'utf8');
 
 const match = source.match(
-  /function summarizeRunForCompare\(data\) \{[\s\S]*?\n\}\n\nfunction setDisplayedRun/
+  /function summarizeRunForCompare\(data\) \{[\s\S]*?\r?\n\}\r?\n\r?\nfunction setDisplayedRun/
 );
 
 if (!match) {
   throw new Error('Could not locate summarizeRunForCompare in app.js');
 }
 
-const functionSource = match[0].replace(/\n\nfunction setDisplayedRun$/, '');
+const functionSource = match[0].replace(/\r?\n\r?\nfunction setDisplayedRun$/, '');
 
 const context = {
   AppState: { currentProject: 'kemi' },
