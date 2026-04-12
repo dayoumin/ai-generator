@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kemi AI Studio</title>
+    <title>AI Generator Studio</title>
     <link rel="stylesheet" href="/static/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
         rel="stylesheet">
@@ -17,7 +17,7 @@
             <div class="sidebar-header">
                 <div class="logo">
                     <div class="logo-icon"><i data-lucide="sparkles"></i></div>
-                    <h1>Kemi <span>Studio</span></h1>
+                    <h1 id="app-title">AI Generator <span>Studio</span></h1>
                 </div>
             </div>
             <nav class="nav-menu">
@@ -26,6 +26,9 @@
                 </a>
                 <a href="#" class="nav-item" data-tab="prompts">
                     <i data-lucide="file-text"></i> 프롬프트
+                </a>
+                <a href="#" class="nav-item" data-tab="references">
+                    <i data-lucide="images"></i> 레퍼런스
                 </a>
                 <a href="#" class="nav-item" data-tab="outputs">
                     <i data-lucide="image"></i> 갤러리
@@ -39,16 +42,23 @@
             </nav>
             <div class="sidebar-footer">
                 <div class="status-indicator">
-                    <span class="dot pulse green"></span>
-                    <span>ComfyUI Live</span>
+                    <span class="dot pulse green" id="provider-status-dot"></span>
+                    <div class="status-copy">
+                        <span id="provider-status-label">Renderer Ready</span>
+                        <small id="provider-status-detail">Waiting for provider status</small>
+                    </div>
                 </div>
             </div>
         </aside>
 
         <main class="main-content">
             <header class="top-bar">
-                <div class="breadcrumb">Kemi <span>Studio</span></div>
+                <div class="breadcrumb" id="project-breadcrumb">AI Generator <span>Studio</span></div>
                 <div class="actions" id="top-actions">
+                    <select id="project-selector" class="file-selector" style="min-width: 180px;">
+                        <option>Loading projects...</option>
+                    </select>
+                    <div class="provider-chip" id="active-provider-chip">Renderer: loading...</div>
                     <button class="btn btn-danger" id="cancel-batch-btn" style="display:none;">
                         <i data-lucide="square"></i> 생성 중지
                     </button>
@@ -67,11 +77,26 @@
                     <!-- 웰컴 상태 (배치 실행 전) -->
                     <div id="welcome-state" class="welcome-state">
                         <div class="welcome-icon"><i data-lucide="image-plus"></i></div>
-                        <h2>이미지 생성을 시작하세요</h2>
-                        <p>프롬프트 탭에서 이미지 목록을 불러오고, 스타일을 설정한 후 생성하세요.</p>
-                        <button class="btn btn-primary btn-lg" id="welcome-go-prompts">
-                            <i data-lucide="arrow-right"></i> 프롬프트 탭으로 이동
-                        </button>
+                        <div class="welcome-badge" id="welcome-project-badge">Kemi Workflow</div>
+                        <h2 id="welcome-title">이미지 생성을 시작하세요</h2>
+                        <p id="welcome-description">프롬프트 탭에서 이미지 목록을 불러오고, 스타일을 설정한 후 생성하세요.</p>
+                        <div class="welcome-checklist" id="welcome-checklist">
+                            <div class="welcome-check-item">1. 프로젝트를 선택하세요</div>
+                            <div class="welcome-check-item">2. 프롬프트를 불러오세요</div>
+                            <div class="welcome-check-item">3. 스타일을 조정하고 생성하세요</div>
+                        </div>
+                        <div class="welcome-actions">
+                            <button class="btn btn-secondary btn-lg" id="welcome-go-references" style="display:none;">
+                                <i data-lucide="images"></i> 레퍼런스 탭으로 이동
+                            </button>
+                            <button class="btn btn-primary btn-lg" id="welcome-go-prompts">
+                                <i data-lucide="arrow-right"></i> 프롬프트 탭으로 이동
+                            </button>
+                        </div>
+                        <div class="welcome-note">
+                            <strong>기억할 점</strong>
+                            <p>공용 기능은 AI_Generator에서 준비하고, 프롬프트와 reference-assets는 각 프로젝트에서 준비합니다.</p>
+                        </div>
                     </div>
 
                     <!-- 진행 상태 (배치 실행 중/후) -->
@@ -227,6 +252,40 @@
                             </div>
                         </div>
 
+                        <div class="scene-planner-panel">
+                            <div class="config-header">
+                                <span><i data-lucide="wand-2"></i> Assisted Scene Planner</span>
+                            </div>
+                            <div class="scene-planner-grid">
+                                <div class="config-group">
+                                    <label><i data-lucide="message-square"></i> Situation</label>
+                                    <input type="text" id="scene-situation" class="file-selector"
+                                        placeholder="ex. two friends share coffee after work">
+                                </div>
+                                <div class="config-group">
+                                    <label><i data-lucide="users"></i> Interaction</label>
+                                    <input type="text" id="scene-interaction" class="file-selector"
+                                        placeholder="ex. one teases, one reacts awkwardly">
+                                </div>
+                                <div class="config-group">
+                                    <label><i data-lucide="map"></i> Background</label>
+                                    <input type="text" id="scene-background" class="file-selector"
+                                        placeholder="ex. warm cafe interior">
+                                </div>
+                                <div class="config-group">
+                                    <label><i data-lucide="map-pinned"></i> Location</label>
+                                    <input type="text" id="scene-location" class="file-selector"
+                                        placeholder="ex. window seat, corner table">
+                                </div>
+                                <div class="config-group">
+                                    <label><i data-lucide="sun-medium"></i> Lighting</label>
+                                    <input type="text" id="scene-lighting" class="file-selector"
+                                        placeholder="ex. warm sunset indoor lighting">
+                                </div>
+                            </div>
+                            <p class="scene-planner-note">Used by assisted studio runs and Codex conversation. Direct render ignores these fields.</p>
+                        </div>
+
                         <div class="table-container">
                             <table id="prompt-table">
                                 <thead>
@@ -247,8 +306,102 @@
                     </div>
                 </section>
 
+                <section id="references-tab" class="tab-content">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h3><i data-lucide="images"></i> 레퍼런스 자산</h3>
+                            <div class="selection-info">
+                                <span id="reference-selection-count">0개 선택됨</span>
+                            </div>
+                        </div>
+                        <div class="reference-tab-intro">
+                            <p>프로젝트 라이브러리는 항상 유지되는 기준 자산이고, 임시 레퍼런스는 이번 배치에서만 쓰는 보조 자산입니다.</p>
+                        </div>
+                        <div class="scene-template-panel">
+                            <div class="scene-template-header">
+                                <div>
+                                    <h4>Scene Templates</h4>
+                                    <p>Save and reuse character/layout combinations for single-person and two-person scenes.</p>
+                                </div>
+                                <div class="scene-template-actions">
+                                    <button class="btn btn-secondary" id="clear-scene-template-btn">
+                                        <i data-lucide="plus"></i> New
+                                    </button>
+                                    <button class="btn btn-danger" id="delete-scene-template-btn">
+                                        <i data-lucide="trash-2"></i> Delete
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="scene-template-editor">
+                                <input type="text" id="scene-template-name" class="file-selector" placeholder="Template name">
+                                <select id="scene-template-composition" class="preset-selector">
+                                    <option value="single">1 Person</option>
+                                    <option value="duo">2 People</option>
+                                    <option value="group">Group</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                                <input type="text" id="scene-template-description" class="file-selector" placeholder="Notes: background, prop set, mood, camera rules">
+                                <button class="btn btn-primary" id="save-scene-template-btn">
+                                    <i data-lucide="save"></i> Save Current Setup
+                                </button>
+                                <button class="btn btn-secondary" id="apply-scene-template-btn">
+                                    <i data-lucide="wand-2"></i> Apply Selected
+                                </button>
+                            </div>
+                            <div id="scene-template-empty" class="empty-state compact" style="display:none;">
+                                <i data-lucide="library"></i>
+                                <p>No saved templates yet.</p>
+                                <p class="empty-hint">Save the current reference combination, prompt style, steps, and aspect ratio as a reusable scene preset.</p>
+                            </div>
+                            <div id="scene-template-list" class="scene-template-list"></div>
+                        </div>
+                        <div class="reference-assets-panel">
+                            <div id="reference-status-grid" class="reference-status-grid"></div>
+                            <div class="reference-assets-toolbar">
+                                <div class="reference-assets-meta">
+                                    <label>Asset Root</label>
+                                    <code id="reference-assets-root">-</code>
+                                    <div class="reference-count-row">
+                                        <span>라이브러리 <strong id="reference-library-count">0</strong></span>
+                                        <span>임시 <strong id="reference-temp-count">0</strong></span>
+                                    </div>
+                                    <div id="reference-definition-files" class="reference-definition-files"></div>
+                                    <p id="reference-selection-preview">선택된 레퍼런스 없음</p>
+                                    <p id="reference-capability-note" class="reference-capability-note"></p>
+                                </div>
+                                <div class="reference-upload-tools">
+                                    <div id="reference-preset-group" class="reference-preset-group"></div>
+                                    <input type="text" id="reference-target-dir" class="file-selector"
+                                        placeholder="characters/haru/base">
+                                    <input type="file" id="reference-upload-input" accept=".png,.jpg,.jpeg,.webp">
+                                    <button class="btn btn-secondary" id="upload-reference-btn">
+                                        <i data-lucide="upload"></i> 레퍼런스 업로드
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="reference-assets-empty" class="empty-state compact">
+                                <i data-lucide="folder-search"></i>
+                                <p>아직 등록된 레퍼런스 이미지가 없습니다</p>
+                                <p class="empty-hint">기준 캐릭터, 감정 시트, 역할 키트를 먼저 넣어두세요</p>
+                            </div>
+                            <div id="reference-assets-grid" class="reference-assets-grid"></div>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- Gallery Tab -->
                 <section id="outputs-tab" class="tab-content">
+                    <div class="run-compare-panel" id="run-compare-panel">
+                        <div class="panel-header">
+                            <h3><i data-lucide="split-square-horizontal"></i> Run Compare</h3>
+                        </div>
+                        <div class="run-view-state" id="run-view-state"></div>
+                        <div class="run-codex-handoff-preview" id="run-codex-handoff-preview"></div>
+                        <div class="run-compare-grid" id="run-compare-grid"></div>
+                        <div class="run-compare-diff" id="run-compare-diff"></div>
+                        <div class="run-retry-suggestion" id="run-retry-suggestion"></div>
+                        <div class="run-retry-lineage" id="run-retry-lineage"></div>
+                    </div>
                     <div class="gallery-header">
                         <div class="gallery-filters">
                             <button class="filter-btn active" data-filter="all">전체 <span class="filter-count" id="count-all">0</span></button>
@@ -357,6 +510,75 @@
                 <!-- Guide Tab -->
                 <section id="guide-tab" class="tab-content">
                     <div class="guide-container">
+                        <div class="guide-section">
+                            <h2>Who Prepares What</h2>
+                            <p class="guide-subtitle">공용 스튜디오와 각 프로젝트의 책임을 분리해 두면 시간이 지나도 다시 쓰기 쉽습니다.</p>
+                            <div class="guide-columns">
+                                <div class="guide-card info">
+                                    <strong>AI_Generator에서 준비</strong>
+                                    <p>프로젝트 선택, 프롬프트 로드, 레퍼런스 자산 선택, 배치 생성, 크롭, manifest, 업로드 같은 공용 스튜디오 기능을 담당합니다.</p>
+                                </div>
+                                <div class="guide-card tip">
+                                    <strong>각 프로젝트에서 준비</strong>
+                                    <p>프롬프트 파일, reference-assets, 크롭 규칙, inject 로직 같은 이미지 명세와 자산은 각 프로젝트가 제공합니다.</p>
+                                </div>
+                            </div>
+                            <table class="guide-table" style="margin-top: 16px;">
+                                <thead>
+                                    <tr>
+                                        <th>항목</th>
+                                        <th>준비 위치</th>
+                                        <th>예시</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>공용 스튜디오 UI / 배치</td>
+                                        <td>AI_Generator</td>
+                                        <td><code>app.py</code>, <code>static/js/app.js</code></td>
+                                    </tr>
+                                    <tr>
+                                        <td>프로젝트 설정</td>
+                                        <td>AI_Generator</td>
+                                        <td><code>projects/mbti.json</code></td>
+                                    </tr>
+                                    <tr>
+                                        <td>프롬프트 소스</td>
+                                        <td>프로젝트</td>
+                                        <td><code>D:/Projects/MBTI/scripts/image-gen/output/prompts.json</code></td>
+                                    </tr>
+                                    <tr>
+                                        <td>레퍼런스 자산</td>
+                                        <td>프로젝트</td>
+                                        <td><code>D:/Projects/MBTI/scripts/image-gen/reference-assets</code></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="guide-section">
+                            <h2>Generation Modes</h2>
+                            <p class="guide-subtitle">하나의 구조로 여러 생성 엔진과 운영 방식을 함께 쓸 수 있게 설계합니다.</p>
+                            <div class="guide-columns">
+                                <div class="guide-card info">
+                                    <strong>1. Local Model</strong>
+                                    <p>ComfyUI 기반 로컬 생성. 현재 기본 모드이며 반복 생성과 빠른 수정에 적합합니다.</p>
+                                </div>
+                                <div class="guide-card info">
+                                    <strong>2. API Model</strong>
+                                    <p>외부 이미지 API 사용. 핵심 컷만 고품질로 뽑거나 특정 스타일이 필요할 때 사용합니다.</p>
+                                </div>
+                                <div class="guide-card tip">
+                                    <strong>3. Codex-Assisted</strong>
+                                    <p>Codex가 프롬프트, reference asset, 프로젝트 설정, 검수 루프를 운영하고 실제 픽셀 렌더링은 ComfyUI나 API가 담당합니다.</p>
+                                </div>
+                            </div>
+                            <div class="guide-card" style="margin-top: 12px;">
+                                <strong>3번째 방법은 어떻게 쓰나?</strong>
+                                <p>Codex가 프로젝트 설정과 자산 구조를 만들고, 어떤 provider를 쓸지 결정하고, 생성 결과를 보고 다시 프롬프트를 조정합니다. 즉 렌더러는 엔진, 운영자는 Codex인 구조입니다.</p>
+                            </div>
+                        </div>
+
                         <div class="guide-section">
                             <h2>Architecture</h2>
                             <div class="arch-diagram">
@@ -554,6 +776,42 @@
             </header>
             <p></p>
             <p class="sub-text"></p>
+            <div class="config-group" style="margin-top: 16px; text-align: left;">
+                <label for="generation-mode">Generation Mode</label>
+                <select id="generation-mode" class="file-selector" style="width: 100%; margin-top: 8px;">
+                    <option value="direct">Direct render</option>
+                    <option value="assisted">LLM-assisted render</option>
+                </select>
+                <label for="provider-selector" style="display:block; margin-top: 12px;">Renderer</label>
+                <select id="provider-selector" class="file-selector" style="width: 100%; margin-top: 8px;"></select>
+                <p id="provider-note" class="sub-text provider-note" style="margin-top: 8px; text-align: left;">
+                    Provider availability will be checked before render.
+                </p>
+                <label for="operator-mode" style="display:block; margin-top: 12px;">Operator</label>
+                <select id="operator-mode" class="file-selector" style="width: 100%; margin-top: 8px;">
+                    <option value="studio">Studio operator</option>
+                    <option value="codex-conversation">Codex conversation</option>
+                </select>
+                <p id="operator-note" class="sub-text provider-note" style="margin-top: 8px; text-align: left;">
+                    Studio keeps generation inside the app. Codex conversation keeps the same scene state aligned for chat-guided work.
+                </p>
+                <p id="generation-mode-note" class="sub-text" style="margin-top: 8px; text-align: left;">
+                    Direct keeps the current prompt-first workflow.
+                </p>
+            </div>
+            <div id="preflight-panel" class="preflight-panel" style="display:none;">
+                <div id="preflight-summary" class="preflight-summary"></div>
+                <div id="preflight-errors" class="preflight-list preflight-errors"></div>
+                <div id="preflight-warnings" class="preflight-list preflight-warnings"></div>
+            </div>
+            <div id="codex-handoff-panel" class="preflight-panel" style="display:none;">
+                <div class="run-diff-header">
+                    <strong>Codex Handoff</strong>
+                    <button class="btn btn-secondary" id="codex-handoff-copy-btn" type="button">Copy For Codex</button>
+                </div>
+                <div id="codex-handoff-summary" class="sub-text" style="margin-top: 8px; text-align: left;"></div>
+                <textarea id="codex-handoff-text" class="handoff-textarea" readonly></textarea>
+            </div>
             <div class="modal-actions">
                 <button class="btn btn-secondary" id="cancel-confirm-btn">취소</button>
                 <button class="btn btn-primary" id="start-now-btn">생성 시작</button>
@@ -640,9 +898,14 @@ Cute Cat,Cute cat sitting on a rug,1:1</pre>
                         <label>제외 항목</label>
                         <code id="detail-negative-text" class="prompt-display negative"></code>
                     </div>
+                    <div class="detail-prompt">
+                        <label>Review Note</label>
+                        <textarea id="detail-review-note" class="review-note-input" placeholder="Why this is good or what should change next time"></textarea>
+                    </div>
                     <div class="detail-actions">
                         <button class="btn btn-success" id="btn-approve">승인 (A)</button>
                         <button class="btn btn-danger" id="btn-reject">거부 (R)</button>
+                        <button class="btn btn-secondary" id="btn-save-note">메모 저장</button>
                         <span style="opacity:0.5; font-size:0.8rem; margin-left:8px;">좌우 화살표로 이동</span>
                     </div>
                 </div>

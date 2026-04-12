@@ -1,21 +1,59 @@
 // --- Initialization ---
 const AppState = {
+    currentProject: 'kemi',
+    availableProjects: [],
+    availableProviders: [],
+    providerStatuses: {},
+    providerHealthFetchError: false,
+    currentProviderId: null,
+    currentOperatorMode: 'studio',
     currentPrompts: [],
+    referenceAssets: [],
+    referenceStatus: null,
+    referencePolicy: {},
+    selectedReferenceAssets: [],
+    sceneTemplates: [],
+    activeSceneTemplateId: null,
+    currentRunId: null,
+    displayedRunId: null,
+    displayedRunSummary: null,
+    lastPreflight: null,
+    lastCodexHandoff: '',
+    lastCodexHandoffPayload: null,
+    currentRunCodexHandoff: null,
+    currentRunCodexHandoffRequestKey: '',
+    recentRuns: [],
+    retrySuggestion: null,
+    retryLineage: null,
+    retryFocusRunId: null,
+    retrySuggestionRequestKey: '',
+    retryLineageRequestKey: '',
+    pollIntervalId: null,
+    referenceDefinitions: [],
     lastLogCount: 0,
     lastResultCount: 0,
     lastStatusData: null
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+const STUDIO_STATE_KEY = 'ai_generator_studio_state';
+const SCENE_PLANNER_IDS = [
+    CONFIG.DOM.SCENE_SITUATION,
+    CONFIG.DOM.SCENE_INTERACTION,
+    CONFIG.DOM.SCENE_BACKGROUND,
+    CONFIG.DOM.SCENE_LOCATION,
+    CONFIG.DOM.SCENE_LIGHTING
+];
+
+document.addEventListener('DOMContentLoaded', async () => {
     lucide.createIcons();
     initTabs();
     initEventListeners();
     initGalleryFilters();
-    loadPromptFiles();
     loadAppConfig();
+    await loadProjects();
     // loadConfig removed — was dead code (function never existed)
-    checkComfyUIHealth();
-    setInterval(checkComfyUIHealth, 30000);
+    await checkProviderHealth();
+    setInterval(checkProviderHealth, 30000);
     // 페이지 로드 시 기존 배치 상태 복구
     checkExistingBatch();
 });
@@ -27,7 +65,10 @@ function initEventListeners() {
     Utils.el('r2-upload-btn')?.addEventListener('click', uploadToR2);
     Utils.el('cancel-batch-btn')?.addEventListener('click', cancelBatch);
     Utils.el('welcome-go-prompts')?.addEventListener('click', () => {
-        document.querySelector('[data-tab="prompts"]')?.click();
+        setActiveTab('prompts');
+    });
+    Utils.el('welcome-go-references')?.addEventListener('click', () => {
+        setActiveTab('references');
     });
     Utils.el('toggle-style-config')?.addEventListener('click', toggleStyleConfig);
     Utils.el('clear-logs-btn')?.addEventListener('click', () => {
@@ -39,7 +80,19 @@ function initEventListeners() {
     Utils.el('toggle-custom-form-btn')?.addEventListener('click', toggleCustomPromptForm);
     Utils.el('add-custom-prompt-btn')?.addEventListener('click', addCustomPrompt);
     Utils.el('download-template-btn')?.addEventListener('click', downloadTemplate);
+    Utils.el(CONFIG.DOM.PROJECT_SELECTOR)?.addEventListener('change', (e) => switchProject(e.target.value));
     Utils.el(CONFIG.DOM.PROMPT_FILE_SELECTOR)?.addEventListener('change', (e) => loadPromptContent(e.target.value));
+    Utils.el(CONFIG.DOM.REFERENCE_UPLOAD_BTN)?.addEventListener('click', uploadReferenceAsset);
+    Utils.el(CONFIG.DOM.TEMPLATE_SAVE_BTN)?.addEventListener('click', saveSceneTemplate);
+    Utils.el(CONFIG.DOM.TEMPLATE_APPLY_BTN)?.addEventListener('click', applySceneTemplate);
+    Utils.el(CONFIG.DOM.TEMPLATE_CLEAR_BTN)?.addEventListener('click', clearSceneTemplateEditor);
+    Utils.el(CONFIG.DOM.TEMPLATE_DELETE_BTN)?.addEventListener('click', deleteSceneTemplate);
+    SCENE_PLANNER_IDS.forEach((id) => {
+        Utils.el(id)?.addEventListener('input', () => {
+            saveScenePlannerState();
+            updateGenerationModeNote();
+        });
+    });
 
     // Settings
     Utils.el('save-settings-btn')?.addEventListener('click', () => { saveAppConfig(); showToast('설정이 저장되었습니다', 'success'); });
@@ -53,6 +106,34 @@ function initEventListeners() {
     // Modals
     Utils.el('cancel-confirm-btn')?.addEventListener('click', closeConfirmModal);
     Utils.el('start-now-btn')?.addEventListener('click', confirmStartBatch);
+    Utils.el(CONFIG.DOM.GENERATION_MODE)?.addEventListener('change', async () => {
+        updateOperatorModeAvailability();
+        updateGenerationModeNote();
+        updateCodexHandoffPanel();
+        if (Utils.el(CONFIG.MODALS.CONFIRM)?.style.display === 'flex') {
+            AppState.lastPreflight = null;
+            await refreshConfirmPreflight();
+        }
+    });
+    Utils.el(CONFIG.DOM.PROVIDER_SELECTOR)?.addEventListener('change', async (e) => {
+        handleProviderSelectionChange(e.target.value);
+        updateCodexHandoffPanel();
+        if (Utils.el(CONFIG.MODALS.CONFIRM)?.style.display === 'flex') {
+            await refreshConfirmPreflight();
+        }
+    });
+    Utils.el(CONFIG.DOM.OPERATOR_MODE)?.addEventListener('change', async (e) => {
+        AppState.currentOperatorMode = e.target.value === 'codex-conversation' ? 'codex-conversation' : 'studio';
+        saveOperatorMode(AppState.currentProject, AppState.currentOperatorMode);
+        updateOperatorModeAvailability();
+        updateGenerationModeNote();
+        updateCodexHandoffPanel();
+        if (Utils.el(CONFIG.MODALS.CONFIRM)?.style.display === 'flex') {
+            AppState.lastPreflight = null;
+            await refreshConfirmPreflight();
+        }
+    });
+    Utils.el(CONFIG.DOM.CODEX_HANDOFF_COPY_BTN)?.addEventListener('click', copyCodexHandoffPayload);
     Utils.el('close-help-btn')?.addEventListener('click', closeHelpModal);
     Utils.el('close-help-footer-btn')?.addEventListener('click', closeHelpModal);
     Utils.el('close-mapping-btn')?.addEventListener('click', () => Utils.el(CONFIG.MODALS.MAPPING).style.display = 'none');
@@ -63,6 +144,7 @@ function initEventListeners() {
     Utils.el('close-detail-btn')?.addEventListener('click', closeImageDetail);
     Utils.el('btn-approve')?.addEventListener('click', () => reviewCurrentImage('approved'));
     Utils.el('btn-reject')?.addEventListener('click', () => reviewCurrentImage('rejected'));
+    Utils.el('btn-save-note')?.addEventListener('click', saveCurrentReviewNote);
 
     // Inputs & Selects
     Utils.el('style-preset')?.addEventListener('change', applyPreset);
@@ -91,14 +173,17 @@ function initTabs() {
         const item = e.target.closest('.nav-item');
         if (item) {
             e.preventDefault();
-            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-            item.classList.add('active');
-            const tabEl = document.getElementById(`${item.dataset.tab}-tab`);
-            if (tabEl) tabEl.classList.add('active');
-            updateTopBarButtons(item.dataset.tab);
+            setActiveTab(item.dataset.tab);
         }
     });
+}
+
+function setActiveTab(tab) {
+    document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelector(`.nav-item[data-tab="${tab}"]`)?.classList.add('active');
+    document.getElementById(`${tab}-tab`)?.classList.add('active');
+    updateTopBarButtons(tab);
 }
 
 function updateTopBarButtons(tab) {
@@ -107,36 +192,665 @@ function updateTopBarButtons(tab) {
     if (startBtn) startBtn.style.display = showStart ? '' : 'none';
 }
 
-// --- ComfyUI Health Check ---
-async function checkComfyUIHealth() {
-    const dot = document.querySelector('.status-indicator .dot');
-    const label = document.querySelector('.status-indicator span:last-child');
+function getCurrentProjectConfig() {
+    return AppState.availableProjects.find((item) => item.id === AppState.currentProject) || null;
+}
+
+function getProjectProviderDescriptor(project, providerId) {
+    if (!project) return null;
+    const normalizedId = String(providerId || project.provider || '').trim().toLowerCase();
+    return (project.supportedProviderInfo || []).find((item) => item.id === normalizedId)
+        || (AppState.availableProviders || []).find((item) => item.id === normalizedId)
+        || project.providerInfo
+        || null;
+}
+
+function buildEffectiveCapabilities(project, providerInfo) {
+    const providerCaps = providerInfo?.capabilities || {};
+    const projectCaps = project?.capabilities || {};
+    const effective = { ...providerCaps };
+    if (Object.prototype.hasOwnProperty.call(effective, 'supportsReferenceAssets')) {
+        effective.supportsReferenceAssets = Boolean(
+            providerCaps.supportsReferenceAssets && projectCaps.supportsReferenceAssets
+        );
+    }
+    return effective;
+}
+
+function getCurrentProviderId() {
+    const project = getCurrentProjectConfig();
+    return AppState.currentProviderId || project?.provider || 'comfyui';
+}
+
+function getOperatorMode() {
+    const raw = Utils.val(CONFIG.DOM.OPERATOR_MODE) || AppState.currentOperatorMode || 'studio';
+    return raw === 'codex-conversation' ? 'codex-conversation' : 'studio';
+}
+
+function getCurrentProviderInfo(project = getCurrentProjectConfig()) {
+    return getProjectProviderDescriptor(project, getCurrentProviderId());
+}
+
+function getCurrentProviderStatus() {
+    return AppState.providerStatuses?.[getCurrentProviderId()] || null;
+}
+
+function saveProviderSelection(projectId, providerId) {
+    const savedState = loadStudioState();
+    saveStudioState({
+        providerSelections: {
+            ...(savedState.providerSelections || {}),
+            [projectId]: providerId
+        }
+    });
+}
+
+function saveOperatorMode(projectId, operatorMode) {
+    const savedState = loadStudioState();
+    saveStudioState({
+        operatorModes: {
+            ...(savedState.operatorModes || {}),
+            [projectId]: operatorMode
+        }
+    });
+}
+
+function loadOperatorMode(project) {
+    const savedState = loadStudioState();
+    const savedMode = String(savedState.operatorModes?.[project?.id] || '').trim().toLowerCase();
+    const nextMode = savedMode === 'codex-conversation' ? 'codex-conversation' : 'studio';
+    AppState.currentOperatorMode = nextMode;
+    Utils.setVal(CONFIG.DOM.OPERATOR_MODE, nextMode);
+    saveOperatorMode(project?.id || AppState.currentProject, nextMode);
+}
+
+function selectProjectProvider(project) {
+    if (!project) {
+        AppState.currentProviderId = null;
+        return null;
+    }
+    const savedState = loadStudioState();
+    const supported = (project.supportedProviderInfo || []).map((item) => item.id);
+    const preferred = String(savedState.providerSelections?.[project.id] || '').trim().toLowerCase();
+    const defaultProvider = String(project.provider || supported[0] || 'comfyui').trim().toLowerCase();
+    const available = supported.filter((providerId) => {
+        const status = AppState.providerStatuses?.[providerId];
+        return !status || (status.configured !== false && status.available !== false);
+    });
+    const nextProvider = (
+        (preferred && supported.includes(preferred) && (!AppState.providerStatuses?.[preferred] || available.includes(preferred)) && preferred)
+        || (supported.includes(defaultProvider) && (!AppState.providerStatuses?.[defaultProvider] || available.includes(defaultProvider)) && defaultProvider)
+        || available[0]
+        || defaultProvider
+        || supported[0]
+        || 'comfyui'
+    );
+    AppState.currentProviderId = nextProvider;
+    saveProviderSelection(project.id, nextProvider);
+    return nextProvider;
+}
+
+function renderProviderSelector(project = getCurrentProjectConfig()) {
+    const select = Utils.el(CONFIG.DOM.PROVIDER_SELECTOR);
+    const note = Utils.el(CONFIG.DOM.PROVIDER_NOTE);
+    if (!select) return;
+
+    const currentProviderId = getCurrentProviderId();
+    const providers = project?.supportedProviderInfo || [];
+    select.innerHTML = '';
+    if (!providers.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No provider available';
+        select.appendChild(opt);
+    }
+    providers.forEach((provider) => {
+        const opt = document.createElement('option');
+        const status = AppState.providerStatuses?.[provider.id];
+        const disabled = Boolean(status && (status.configured === false || status.available === false));
+        opt.value = provider.id;
+        opt.textContent = disabled ? `${provider.label} (unavailable)` : provider.label;
+        opt.disabled = disabled;
+        if (provider.id === currentProviderId) opt.selected = true;
+        select.appendChild(opt);
+    });
+    if (!select.value && providers[0]) {
+        select.value = currentProviderId || providers[0].id;
+    }
+
+    if (note) {
+        const providerInfo = getProjectProviderDescriptor(project, select.value || currentProviderId);
+        const status = AppState.providerStatuses?.[providerInfo?.id || ''];
+        note.classList.remove('is-warning', 'is-error');
+        if (AppState.providerHealthFetchError) {
+            note.textContent = 'Provider status is unavailable because the health check failed.';
+            note.classList.add('is-warning');
+        } else if (status?.configured === false) {
+            note.textContent = status.reason || 'Provider setup is required before render.';
+            note.classList.add('is-error');
+        } else if (status && status.available === false) {
+            note.textContent = status.reason || 'Provider is currently offline.';
+            note.classList.add('is-warning');
+        } else {
+            note.textContent = providerInfo?.description || 'Provider availability will be checked before render.';
+        }
+    }
+}
+
+function updateOperatorModeAvailability() {
+    const select = Utils.el(CONFIG.DOM.OPERATOR_MODE);
+    const note = Utils.el(CONFIG.DOM.OPERATOR_NOTE);
+    if (!select) return;
+    const generationMode = getGenerationMode();
+    const codexOption = Array.from(select.options || []).find((option) => option.value === 'codex-conversation');
+    if (codexOption) {
+        codexOption.disabled = generationMode !== 'assisted';
+    }
+    if (generationMode !== 'assisted' && select.value === 'codex-conversation') {
+        select.value = 'studio';
+        AppState.currentOperatorMode = 'studio';
+    }
+    if (note) {
+        note.classList.remove('is-warning');
+        if (select.value === 'codex-conversation') {
+            note.textContent = 'Codex conversation keeps this scene, template, and review state aligned for chat-guided work.';
+        } else {
+            note.textContent = 'Studio keeps generation inside the app runtime.';
+        }
+        if (generationMode !== 'assisted') {
+            note.textContent += ' Codex conversation is available only in assisted mode.';
+            note.classList.add('is-warning');
+        }
+    }
+}
+
+function getSelectedPromptsForGeneration() {
+    const selectedIdxs = Array.from(document.querySelectorAll('.prompt-checkbox:checked'))
+        .map((cb) => parseInt(cb.dataset.idx, 10))
+        .filter((value) => !Number.isNaN(value));
+    return AppState.currentPrompts.filter((_, i) => selectedIdxs.includes(i));
+}
+
+function buildCodexHandoffPayload(selectedPrompts = getSelectedPromptsForGeneration()) {
+    const project = getCurrentProjectConfig();
+    const providerInfo = getCurrentProviderInfo(project);
+    const payload = buildGenerationPayload(selectedPrompts);
+    const activeTemplate = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId) || null;
+    const selectedReferences = AppState.selectedReferenceAssets.map((asset) => ({
+        id: asset.id || asset.relativePath,
+        relativePath: asset.relativePath,
+        name: asset.name,
+        slot: asset.slot,
+        character: asset.character || ''
+    }));
+    return {
+        handoffVersion: 1,
+        intent: 'codex-conversation-image-generation',
+        project: {
+            id: AppState.currentProject,
+            name: project?.name || AppState.currentProject,
+            workflowMode: project?.workflowMode || 'prompt-first'
+        },
+        execution: {
+            generationMode: payload.mode,
+            operatorMode: payload.operator_mode,
+            providerId: payload.provider_id,
+            providerLabel: providerInfo?.label || payload.provider_id
+        },
+        template: activeTemplate ? {
+            id: activeTemplate.id,
+            name: activeTemplate.name,
+            composition: activeTemplate.composition,
+            description: activeTemplate.description
+        } : null,
+        sceneDraft: getScenePlannerState(),
+        sceneSpec: payload.scene_spec,
+        selectedPrompts: selectedPrompts.map((item) => ({
+            desc_ko: item.desc_ko || '',
+            prompt: item.prompt || '',
+            aspect_ratio: item.aspect_ratio || ''
+        })),
+        selectedReferences,
+        generationParams: {
+            aspectRatio: payload.global_aspect_ratio,
+            steps: payload.steps,
+            batchCount: payload.batch_count,
+            outputTypes: payload.types,
+            stylePrompt: payload.style_prompt,
+            negativePrompt: payload.negative_prompt
+        },
+        runContext: null,
+        retryContext: null,
+        preflight: AppState.lastPreflight?.summary || null,
+        requestPreview: payload,
+        codexAsk: payload.mode === 'assisted'
+            ? 'Use this generation request to create or refine the next image result with stronger consistency, scene clarity, and character accuracy. This handoff is request-only; use the run handoff from Outputs when review or retry context matters.'
+            : 'Use this direct generation state to refine prompts or propose a better assisted scene setup before rendering.'
+    };
+}
+
+function buildCodexHandoffMessage(handoff) {
+    const execution = handoff.execution || {};
+    const template = handoff.template || null;
+    const runContext = handoff.runContext || {};
+    const retryContext = handoff.retryContext || {};
+    const retrySuggestion = retryContext.suggestion || null;
+    const retryLineage = retryContext.lineage || null;
+    const promptCount = (handoff.selectedPrompts || []).length;
+    const referenceCount = (handoff.selectedReferences || []).length;
+    const outputTypes = (handoff.generationParams?.outputTypes || []).join(', ') || 'thumb, hero';
+    const sceneCue = handoff.sceneDraft?.situation
+        || handoff.sceneSpec?.scene?.situation
+        || handoff.sceneSpec?.scene?.background
+        || 'none';
+    const reviewSummary = runContext.reviewSummary || null;
+    const reviewNotes = runContext.reviewNotes || [];
+    const reviewSummaryText = reviewSummary
+        ? `A${reviewSummary.approved || 0} / R${reviewSummary.rejected || 0} / N${reviewSummary.noted || 0}`
+        : 'none';
+    const reviewNotesText = reviewNotes.length
+        ? reviewNotes.map((item) => `${item.status}: ${item.note}`).join(' | ')
+        : 'none';
+    const retryPatchEntries = Object.entries(retrySuggestion?.sceneDraftPatch || {})
+        .filter(([, value]) => value)
+        .map(([key, value]) => `${key}=${value}`);
+    const retryHintsText = (retrySuggestion?.promptHints || []).join(' | ') || 'none';
+    const retryStyleText = (retrySuggestion?.stylePromptAdditions || []).join(' | ') || 'none';
+    const retryNegativeText = (retrySuggestion?.negativePromptAdditions || []).join(' | ') || 'none';
+    const retryLineageText = retryLineage
+        ? `${retryLineage.runCount || 0} runs, latest outcome: ${retryLineage.latestOutcome || 'n/a'}`
+        : 'none';
+    const lines = [
+        'Use the following studio state as the source of truth.',
+        `Project: ${handoff.project?.name || handoff.project?.id || 'unknown'}`,
+        `Generation mode: ${execution.generationMode || 'assisted'}`,
+        `Operator mode: ${execution.operatorMode || 'codex-conversation'}`,
+        `Renderer: ${execution.providerLabel || execution.providerId || 'unknown'}`,
+        `Template: ${template ? `${template.name} (${template.composition || 'custom'})` : 'none selected'}`,
+        `Scene cue: ${sceneCue}`,
+        `Selected prompts: ${promptCount}`,
+        `Selected references: ${referenceCount}`,
+        `Outputs: ${outputTypes}`,
+        `Run context: ${runContext.runId ? `${String(runContext.runId).slice(0, 8)} (${runContext.mode || 'unknown'})` : 'none'}`,
+        `Review summary: ${reviewSummaryText}`,
+        `Review notes: ${reviewNotesText}`,
+        `Retry suggestion: ${retrySuggestion?.summary || 'none'}`,
+        `Retry scene patch: ${retryPatchEntries.join(' | ') || 'none'}`,
+        `Retry prompt hints: ${retryHintsText}`,
+        `Retry style additions: ${retryStyleText}`,
+        `Retry negative additions: ${retryNegativeText}`,
+        `Retry lineage: ${retryLineageText}`,
+        '',
+        'Task:',
+        handoff.codexAsk || 'Use this state to create or refine the image generation result.',
+        '',
+        'When you reply, treat the JSON below as the exact handoff payload.',
+        '',
+        JSON.stringify(handoff, null, 2)
+    ];
+    return lines.join('\n');
+}
+
+function updateCodexHandoffPanel(selectedPrompts = getSelectedPromptsForGeneration()) {
+    const panel = Utils.el(CONFIG.DOM.CODEX_HANDOFF_PANEL);
+    const summary = Utils.el(CONFIG.DOM.CODEX_HANDOFF_SUMMARY);
+    const textarea = Utils.el(CONFIG.DOM.CODEX_HANDOFF_TEXT);
+    if (!panel || !summary || !textarea) return;
+
+    if (getOperatorMode() !== 'codex-conversation') {
+        panel.style.display = 'none';
+        textarea.value = '';
+        AppState.lastCodexHandoff = '';
+        AppState.lastCodexHandoffPayload = null;
+        return;
+    }
+
+    const handoff = buildCodexHandoffPayload(selectedPrompts);
+    AppState.lastCodexHandoffPayload = handoff;
+    AppState.lastCodexHandoff = buildCodexHandoffMessage(handoff);
+    summary.textContent = `Copy this request into chat so Codex can work from the same project, template, scene, references, and generation settings. Use Outputs > Copy Run Handoff when review or retry context matters.`;
+    textarea.value = AppState.lastCodexHandoff;
+    panel.style.display = '';
+}
+
+async function copyCodexHandoffPayload() {
+    if (!AppState.lastCodexHandoff) {
+        updateCodexHandoffPanel();
+    }
+    if (!AppState.lastCodexHandoff) {
+        showToast('No Codex handoff payload available', 'warning');
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(AppState.lastCodexHandoff);
+        showToast('Codex handoff copied', 'success');
+    } catch (e) {
+        showToast(`Codex handoff copy failed: ${e.message}`, 'error');
+    }
+}
+
+async function fetchRunCodexHandoff(runId) {
+    if (!runId) {
+        throw new Error('No run selected for Codex handoff');
+    }
+    const resp = await fetch(`${CONFIG.API.RUN_CODEX_HANDOFF}/${encodeURIComponent(runId)}/codex-handoff?project=${encodeURIComponent(AppState.currentProject)}`);
+    const data = await resp.json();
+    if (!resp.ok || data.detail) {
+        throw new Error(data.detail || 'Failed to load run Codex handoff');
+    }
+    return data;
+}
+
+function buildRunHandoffRequestKey(projectId, runId) {
+    return `${projectId || ''}:${runId || ''}:codex-handoff`;
+}
+
+async function loadRunCodexHandoff(runId, shouldRender = true) {
+    if (!runId) {
+        AppState.currentRunCodexHandoff = null;
+        AppState.currentRunCodexHandoffRequestKey = '';
+        if (shouldRender) renderRunCodexHandoffPreview();
+        return;
+    }
+    const requestKey = buildRunHandoffRequestKey(AppState.currentProject, runId);
+    AppState.currentRunCodexHandoffRequestKey = requestKey;
+    AppState.currentRunCodexHandoff = null;
+    if (shouldRender) renderRunCodexHandoffPreview();
+    try {
+        const handoff = await fetchRunCodexHandoff(runId);
+        if (AppState.currentRunCodexHandoffRequestKey === requestKey) {
+            AppState.currentRunCodexHandoff = handoff;
+        }
+    } catch (e) {
+        console.error('Failed to load run Codex handoff', e);
+        if (AppState.currentRunCodexHandoffRequestKey === requestKey) {
+            AppState.currentRunCodexHandoff = null;
+        }
+    }
+    if (shouldRender) renderRunCodexHandoffPreview();
+}
+
+async function copyFocusedRunCodexHandoff() {
+    const runId = AppState.retryFocusRunId || AppState.displayedRunId || AppState.currentRunId || null;
+    if (!runId) {
+        showToast('No run selected for Codex handoff', 'warning');
+        return;
+    }
+    try {
+        const handoff = await fetchRunCodexHandoff(runId);
+        AppState.lastCodexHandoffPayload = handoff.payload || null;
+        AppState.lastCodexHandoff = handoff.message || '';
+        AppState.currentRunCodexHandoff = handoff;
+        AppState.currentRunCodexHandoffRequestKey = buildRunHandoffRequestKey(AppState.currentProject, runId);
+        renderRunCodexHandoffPreview();
+        await navigator.clipboard.writeText(AppState.lastCodexHandoff);
+        showToast('Run Codex handoff copied', 'success');
+    } catch (e) {
+        showToast(`Run Codex handoff failed: ${e.message}`, 'error');
+    }
+}
+
+function renderRunCodexHandoffPreview() {
+    const container = Utils.el(CONFIG.DOM.RUN_CODEX_HANDOFF_PREVIEW);
+    if (!container) return;
+
+    const displayedSummary = AppState.displayedRunSummary
+        || AppState.recentRuns.find((item) => item.runId === AppState.displayedRunId)
+        || null;
+    if (!displayedSummary || displayedSummary.mode !== 'assisted') {
+        container.innerHTML = '';
+        return;
+    }
+
+    const handoff = AppState.currentRunCodexHandoff;
+    const displayedRunId = displayedSummary.runId || AppState.displayedRunId || null;
+    const handoffRunId = handoff?.payload?.runContext?.runId || null;
+    if (!handoff || !handoff.payload || (displayedRunId && handoffRunId && handoffRunId !== displayedRunId)) {
+        container.innerHTML = `
+            <div class="run-empty">
+                Codex handoff preview is loading for the selected assisted run.
+            </div>
+        `;
+        return;
+    }
+
+    const payload = handoff.payload || {};
+    const runContext = payload.runContext || {};
+    const retrySuggestion = payload.retryContext?.suggestion || null;
+    const retryLineage = payload.retryContext?.lineage || null;
+    const reviewSummary = runContext.reviewSummary || {};
+    const messagePreview = String(handoff.message || '').split('\n').slice(0, 18).join('\n');
+
+    container.innerHTML = `
+        <div class="run-handoff-header">
+            <div>
+                <strong>Codex Handoff Preview</strong>
+                <div class="run-handoff-sub">Run ${String(runContext.runId || '').slice(0, 8)} / ${payload.execution?.providerLabel || payload.execution?.providerId || 'unknown renderer'}</div>
+            </div>
+            <button class="btn btn-secondary" id="copy-run-codex-handoff-inline-btn">Copy Full Handoff</button>
+        </div>
+        <div class="run-handoff-grid">
+            <div class="run-handoff-card">
+                <label>Review Context</label>
+                <div class="run-handoff-meta">A${reviewSummary.approved || 0} / R${reviewSummary.rejected || 0} / N${reviewSummary.noted || 0}</div>
+                <div class="run-handoff-notes">
+                    ${(runContext.reviewNotes || []).length
+                        ? (runContext.reviewNotes || []).map((item) => `<div class="run-handoff-note"><strong>${escapeHtml(item.status)}</strong><span>${escapeHtml(item.note)}</span></div>`).join('')
+                        : '<div class="run-empty">No review notes saved for this run.</div>'}
+                </div>
+            </div>
+            <div class="run-handoff-card">
+                <label>Retry Context</label>
+                <div class="run-handoff-meta">${escapeHtml(retrySuggestion?.summary || 'No retry suggestion summary yet.')}</div>
+                <div class="retry-chip-row">
+                    ${(retrySuggestion?.promptHints || []).map((item) => `<span class="retry-chip">${escapeHtml(item)}</span>`).join('')}
+                </div>
+                <div class="run-handoff-meta">${retryLineage ? `${retryLineage.runCount || 0} runs in lineage` : 'No retry lineage yet.'}</div>
+            </div>
+        </div>
+        <label class="run-handoff-label">Message Preview</label>
+        <textarea class="handoff-textarea run-handoff-textarea" readonly>${messagePreview}</textarea>
+    `;
+    Utils.el('copy-run-codex-handoff-inline-btn')?.addEventListener('click', copyFocusedRunCodexHandoff);
+}
+
+function updateProviderStatusChrome() {
+    const project = getCurrentProjectConfig();
+    const providerId = getCurrentProviderId();
+    const providerInfo = getProjectProviderDescriptor(project, providerId) || { id: providerId, label: providerId };
+    const status = AppState.providerStatuses?.[providerId] || null;
+    const dot = Utils.el(CONFIG.DOM.PROVIDER_STATUS_DOT);
+    const label = Utils.el(CONFIG.DOM.PROVIDER_STATUS_LABEL);
+    const detail = Utils.el(CONFIG.DOM.PROVIDER_STATUS_DETAIL);
+    const chip = Utils.el(CONFIG.DOM.ACTIVE_PROVIDER_CHIP);
+
+    if (dot) {
+        dot.classList.remove('green', 'red', 'amber');
+        if (AppState.providerHealthFetchError) dot.classList.add('red');
+        else if (status?.configured === false) dot.classList.add('amber');
+        else if (status && status.available === false) dot.classList.add('red');
+        else dot.classList.add('green');
+    }
+
+    if (label) {
+        if (AppState.providerHealthFetchError) label.textContent = `${providerInfo.label} status unavailable`;
+        else if (status?.configured === false) label.textContent = `${providerInfo.label} setup required`;
+        else if (status && status.available === false) label.textContent = `${providerInfo.label} offline`;
+        else label.textContent = `${providerInfo.label} ready`;
+    }
+
+    if (detail) {
+        detail.textContent = (AppState.providerHealthFetchError ? 'Health check request failed.' : '')
+            || status?.reason
+            || providerInfo.description
+            || 'Provider status is ready.';
+    }
+
+    if (chip) {
+        const statusText = AppState.providerHealthFetchError
+            ? 'status unavailable'
+            : status?.configured === false
+                ? 'setup required'
+                : status && status.available === false
+                    ? 'offline'
+                    : 'ready';
+        chip.textContent = `Renderer: ${providerInfo.label} - ${statusText}`;
+    }
+}
+
+function handleProviderSelectionChange(providerId) {
+    const project = getCurrentProjectConfig();
+    if (!project || !providerId) return;
+    AppState.currentProviderId = providerId;
+    saveProviderSelection(project.id, providerId);
+    updateProjectChrome(project);
+    renderProviderSelector(project);
+    updateProviderStatusChrome();
+    updateGenerationModeNote();
+}
+
+function buildStatusUrl() {
+    const params = new URLSearchParams();
+    params.set('project', AppState.currentProject);
+    if (AppState.currentRunId) params.set('run_id', AppState.currentRunId);
+    return `${CONFIG.API.STATUS}?${params.toString()}`;
+}
+
+function getDisplayedRunId() {
+    return AppState.displayedRunId || AppState.currentRunId || null;
+}
+
+function getReviewTargetRunId() {
+    return getDisplayedRunId();
+}
+
+function buildRetryRequestKey(projectId, runId) {
+    return `${projectId || ''}:${runId || ''}`;
+}
+
+function summarizeRunForCompare(data) {
+    if (!data) return null;
+    const request = data.request || {};
+    const metadata = request.metadata || {};
+    const sceneSpec = request.sceneSpec || {};
+    const scene = sceneSpec.scene || {};
+    const results = data.results || [];
+    const retryFromRunId = String(metadata.retry_from_run_id || metadata.retryFromRunId || '').trim();
+    const retrySource = String(metadata.retry_source || metadata.retrySource || '').trim();
+    const approved = results.filter((item) => item.review_status === 'approved').length;
+    const rejected = results.filter((item) => item.review_status === 'rejected').length;
+    const noted = results.filter((item) => (item.review_note || '').trim()).length;
+    const noteHighlights = [];
+    for (const item of results) {
+        const note = (item.review_note || '').trim();
+        if (note && !noteHighlights.includes(note)) noteHighlights.push(note);
+        if (noteHighlights.length >= 2) break;
+    }
+    return {
+        runId: data.run_id || data.runId || null,
+        projectId: data.project || data.projectId || AppState.currentProject,
+        mode: data.mode || 'direct',
+        providerId: data.provider_id || data.providerId || 'comfyui',
+        operatorMode: request.operatorMode || 'studio',
+        templateId: request.templateId || null,
+        promptCount: (request.prompts || []).length,
+        referenceCount: (data.reference_assets || data.referenceAssets || []).length,
+        outputTypes: request.outputTypes || [],
+        finishStatus: data.finish_status || data.finishStatus || null,
+        isRunning: Boolean(data.is_running || data.isRunning),
+        completed: data.completed || 0,
+        total: data.total || 0,
+        succeeded: data.succeeded || 0,
+        createdAt: data.createdAt || null,
+        updatedAt: data.updatedAt || null,
+        sceneSummary: scene.situation || scene.background || '',
+        retry: retryFromRunId ? {
+            isRetry: true,
+            fromRunId: retryFromRunId,
+            source: retrySource || null
+        } : { isRetry: false, fromRunId: null, source: null },
+        reviewSummary: {
+            approved,
+            rejected,
+            pending: results.filter((item) => (item.review_status || 'pending') === 'pending').length,
+            noted,
+            noteHighlights
+        }
+    };
+}
+
+function setDisplayedRun(recordOrStatus) {
+    AppState.lastStatusData = recordOrStatus;
+    AppState.displayedRunId = recordOrStatus?.run_id || recordOrStatus?.runId || null;
+    AppState.displayedRunSummary = summarizeRunForCompare(recordOrStatus);
+}
+
+async function followLiveRun() {
+    if (!AppState.currentRunId) {
+        showToast('No live run to follow', 'warning');
+        return;
+    }
+    try {
+        const resp = await fetch(buildStatusUrl());
+        const data = await resp.json();
+        if (!resp.ok || data.detail) {
+            throw new Error(data.detail || 'Failed to load live run');
+        }
+        resetRunViewState();
+        updateUI(data, { syncCurrentRun: true, syncDisplayedRun: true });
+        if ((data.mode || '').toLowerCase() === 'assisted' && data.run_id) {
+            AppState.retryFocusRunId = data.run_id;
+            await Promise.all([
+                loadRunCodexHandoff(data.run_id, false),
+                loadRetrySuggestion(data.run_id, false),
+                loadRetryLineage(data.run_id, false)
+            ]);
+        } else {
+            AppState.currentRunCodexHandoff = null;
+            AppState.currentRunCodexHandoffRequestKey = '';
+        }
+        renderRunComparePanel();
+        setActiveTab('outputs');
+    } catch (e) {
+        showToast(`Live run load failed: ${e.message}`, 'error');
+    }
+}
+
+// --- Provider Health Check ---
+async function checkProviderHealth() {
+    const previousProviderId = AppState.currentProviderId;
     try {
         const resp = await fetch(CONFIG.API.HEALTH);
         const data = await resp.json();
-        if (data.comfyui) {
-            dot?.classList.add('green');
-            dot?.classList.remove('red');
-            if (label) label.textContent = 'ComfyUI Live';
-        } else {
-            dot?.classList.remove('green');
-            dot?.classList.add('red');
-            if (label) label.textContent = 'ComfyUI Offline';
-        }
+        AppState.providerStatuses = data.providers || {};
+        AppState.providerHealthFetchError = false;
     } catch {
-        dot?.classList.remove('green');
-        dot?.classList.add('red');
-        if (label) label.textContent = 'Server Error';
+        AppState.providerStatuses = {};
+        AppState.providerHealthFetchError = true;
+    }
+    const project = getCurrentProjectConfig();
+    selectProjectProvider(project);
+    renderProviderSelector(project);
+    updateProviderStatusChrome();
+    if (Utils.el(CONFIG.MODALS.CONFIRM)?.style.display === 'flex') {
+        const providerChanged = previousProviderId !== AppState.currentProviderId;
+        if (providerChanged) {
+            updateGenerationModeNote();
+            AppState.lastPreflight = null;
+        }
+        await refreshConfirmPreflight();
     }
 }
 
 // --- Check Existing Batch on Load ---
 async function checkExistingBatch() {
     try {
-        const resp = await fetch(CONFIG.API.STATUS);
+        const resp = await fetch(buildStatusUrl());
         const data = await resp.json();
-        if (data.total > 0 || data.is_running || data.finish_status) {
-            updateUI(data);
+        const matchesCurrentProject = !data.project || data.project === AppState.currentProject;
+        AppState.currentRunId = (matchesCurrentProject && data.is_running && data.run_id) ? data.run_id : null;
+        if (matchesCurrentProject && (data.total > 0 || data.is_running || data.finish_status)) {
+            updateUI(data, { syncCurrentRun: true });
             if (data.is_running) {
                 setBusy(true);
                 pollStatus();
@@ -150,7 +864,7 @@ async function uploadToR2() {
     const btn = Utils.el('r2-upload-btn');
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="spinner"></i> Uploading...'; }
     try {
-        const resp = await fetch(CONFIG.API.UPLOAD_R2, { method: 'POST' });
+        const resp = await fetch(`${CONFIG.API.UPLOAD_R2}?project=${encodeURIComponent(AppState.currentProject)}`, { method: 'POST' });
         const data = await resp.json();
         if (data.error) {
             showToast('업로드 실패: ' + data.error, 'error');
@@ -248,33 +962,1660 @@ function loadAppConfig() {
     }
 }
 
+function loadStudioState() {
+    try {
+        return JSON.parse(localStorage.getItem(STUDIO_STATE_KEY) || '{}');
+    } catch (e) {
+        console.error('Studio state load failed', e);
+        return {};
+    }
+}
+
+function saveStudioState(patch = {}) {
+    const prev = loadStudioState();
+    const next = {
+        currentProject: prev.currentProject || 'kemi',
+        promptFiles: prev.promptFiles || {},
+        selectedReferenceAssets: prev.selectedReferenceAssets || {},
+        scenePlanner: prev.scenePlanner || {},
+        providerSelections: prev.providerSelections || {},
+        operatorModes: prev.operatorModes || {},
+        ...patch
+    };
+    localStorage.setItem(STUDIO_STATE_KEY, JSON.stringify(next));
+    return next;
+}
+
+function getScenePlannerState() {
+    return {
+        situation: Utils.val(CONFIG.DOM.SCENE_SITUATION).trim(),
+        interaction: Utils.val(CONFIG.DOM.SCENE_INTERACTION).trim(),
+        background: Utils.val(CONFIG.DOM.SCENE_BACKGROUND).trim(),
+        location: Utils.val(CONFIG.DOM.SCENE_LOCATION).trim(),
+        lighting: Utils.val(CONFIG.DOM.SCENE_LIGHTING).trim()
+    };
+}
+
+function setScenePlannerState(state = {}) {
+    Utils.setVal(CONFIG.DOM.SCENE_SITUATION, state.situation || '');
+    Utils.setVal(CONFIG.DOM.SCENE_INTERACTION, state.interaction || '');
+    Utils.setVal(CONFIG.DOM.SCENE_BACKGROUND, state.background || '');
+    Utils.setVal(CONFIG.DOM.SCENE_LOCATION, state.location || '');
+    Utils.setVal(CONFIG.DOM.SCENE_LIGHTING, state.lighting || '');
+}
+
+function saveScenePlannerState() {
+    const savedState = loadStudioState();
+    saveStudioState({
+        scenePlanner: {
+            ...(savedState.scenePlanner || {}),
+            [AppState.currentProject]: getScenePlannerState()
+        }
+    });
+}
+
+function loadScenePlannerState() {
+    const savedState = loadStudioState();
+    const scenePlanner = savedState.scenePlanner?.[AppState.currentProject] || {};
+    setScenePlannerState(scenePlanner);
+}
+
+async function loadProjects() {
+    try {
+        const resp = await fetch(CONFIG.API.PROJECTS);
+        const data = await resp.json();
+        const projects = data.projects || [];
+        AppState.availableProviders = data.providers || [];
+        AppState.availableProjects = projects;
+        const savedState = loadStudioState();
+
+        const select = Utils.el(CONFIG.DOM.PROJECT_SELECTOR);
+        if (select) {
+            select.innerHTML = '';
+            projects.forEach((project) => {
+                const opt = document.createElement('option');
+                opt.value = project.id;
+                opt.innerText = project.name || project.id;
+                select.appendChild(opt);
+            });
+        }
+
+        const hasMbti = projects.some((project) => project.id === 'mbti');
+        const savedProject = savedState.currentProject;
+        const currentProject = AppState.currentProject;
+
+        let preferredProject = 'kemi';
+        if (savedProject && projects.some((project) => project.id === savedProject) && savedProject !== 'kemi') {
+            preferredProject = savedProject;
+        } else if (currentProject && projects.some((project) => project.id === currentProject) && currentProject !== 'kemi') {
+            preferredProject = currentProject;
+        } else if (hasMbti) {
+            preferredProject = 'mbti';
+        } else if (projects.some((project) => project.id === savedProject)) {
+            preferredProject = savedProject;
+        } else if (projects.some((project) => project.id === currentProject)) {
+            preferredProject = currentProject;
+        } else {
+            preferredProject = projects[0]?.id || 'kemi';
+        }
+
+        await switchProject(preferredProject, { updateSelect: true });
+    } catch (e) {
+        console.error("Failed to load projects", e);
+        loadPromptFiles();
+    }
+}
+
+function resetProjectWorkspace() {
+    AppState.currentProviderId = null;
+    AppState.currentOperatorMode = 'studio';
+    AppState.currentPrompts = [];
+    AppState.referenceAssets = [];
+    AppState.referenceStatus = null;
+    AppState.referencePolicy = {};
+    AppState.selectedReferenceAssets = [];
+    AppState.sceneTemplates = [];
+    AppState.activeSceneTemplateId = null;
+    AppState.currentRunId = null;
+    AppState.displayedRunId = null;
+    AppState.displayedRunSummary = null;
+    AppState.lastPreflight = null;
+    AppState.recentRuns = [];
+    AppState.retrySuggestion = null;
+    AppState.retryLineage = null;
+    AppState.retryFocusRunId = null;
+    AppState.retrySuggestionRequestKey = '';
+    AppState.retryLineageRequestKey = '';
+    AppState.referenceDefinitions = [];
+    AppState.lastLogCount = 0;
+    AppState.lastResultCount = 0;
+    AppState.lastStatusData = null;
+    if (AppState.pollIntervalId) {
+        clearInterval(AppState.pollIntervalId);
+        AppState.pollIntervalId = null;
+    }
+    setScenePlannerState({});
+
+    renderPromptTable(AppState.currentPrompts);
+
+    const logContainer = Utils.el(CONFIG.DOM.LOGS);
+    if (logContainer) {
+        logContainer.innerHTML = '';
+    }
+
+    const gallery = Utils.el(CONFIG.DOM.GALLERY);
+    if (gallery) {
+        gallery.innerHTML = '';
+    }
+
+    const previewEl = Utils.el(CONFIG.DOM.PREVIEW);
+    if (previewEl) {
+        previewEl.innerHTML = `
+            <div class="preview-placeholder">
+                <i data-lucide="camera"></i>
+                <p>생성된 이미지가 여기에 표시됩니다</p>
+            </div>
+        `;
+    }
+
+    const welcomeEl = Utils.el('welcome-state');
+    const batchEl = Utils.el('batch-state');
+    if (welcomeEl) welcomeEl.style.display = '';
+    if (batchEl) batchEl.style.display = 'none';
+
+    const totalEl = Utils.el(CONFIG.DOM.TOTAL_TASKS);
+    if (totalEl) totalEl.innerText = '0 / 0';
+    const progEl = Utils.el(CONFIG.DOM.PROGRESS_TEXT);
+    if (progEl) progEl.innerText = '0%';
+    const barEl = Utils.el(CONFIG.DOM.PROGRESS_BAR);
+    if (barEl) barEl.style.width = '0%';
+    const statusEl = Utils.el(CONFIG.DOM.STATUS_TEXT);
+    if (statusEl) statusEl.innerText = '대기 중';
+
+    renderReferenceAssets();
+    renderSceneTemplates();
+    renderRunComparePanel();
+    clearSceneTemplateEditor({ preserveSelection: false });
+    updateGalleryCounts();
+    lucide.createIcons();
+}
+
+function updateProjectChrome(project) {
+    const label = project?.name || project?.id || 'AI Generator';
+    const appTitle = Utils.el(CONFIG.DOM.APP_TITLE);
+    const breadcrumb = Utils.el(CONFIG.DOM.PROJECT_BREADCRUMB);
+    const capabilityNote = Utils.el(CONFIG.DOM.REFERENCE_CAPABILITY_NOTE);
+    const welcomeBadge = Utils.el(CONFIG.DOM.WELCOME_PROJECT_BADGE);
+    const welcomeTitle = Utils.el(CONFIG.DOM.WELCOME_TITLE);
+    const welcomeDescription = Utils.el(CONFIG.DOM.WELCOME_DESCRIPTION);
+    const welcomeChecklist = Utils.el(CONFIG.DOM.WELCOME_CHECKLIST);
+    const welcomeReferenceBtn = Utils.el('welcome-go-references');
+    const titleText = `${label} <span>Studio</span>`;
+    const workflowMode = project?.workflowMode || 'prompt-first';
+    const isReferenceProject = workflowMode === 'reference-first';
+    const providerInfo = getProjectProviderDescriptor(project, AppState.currentProviderId || project?.provider);
+    const effectiveCapabilities = buildEffectiveCapabilities(project, providerInfo);
+    const providerLabel = providerInfo?.label || project?.provider || 'provider';
+    const providerSupportsReferences = !!providerInfo?.capabilities?.supportsReferenceAssets;
+    const supportsReferenceAssets = !!(effectiveCapabilities?.supportsReferenceAssets ?? project?.capabilities?.supportsReferenceAssets);
+
+    if (appTitle) appTitle.innerHTML = titleText;
+    if (breadcrumb) breadcrumb.innerHTML = titleText;
+    document.title = `${label} Studio`;
+
+    if (capabilityNote) {
+        if (supportsReferenceAssets) {
+            capabilityNote.textContent = `이 프로젝트는 ${providerLabel}에서 선택한 레퍼런스를 실제 생성 입력에도 연결합니다.`;
+            capabilityNote.style.display = '';
+        } else if (!providerSupportsReferences) {
+            capabilityNote.textContent = `현재 ${providerLabel} adapter는 레퍼런스를 렌더러 conditioning으로 직접 넣지 않습니다. 대신 장면 설계와 검수 기준에 반영됩니다.`;
+            capabilityNote.style.display = '';
+        } else if (isReferenceProject) {
+            capabilityNote.textContent = `이 프로젝트는 ${providerLabel}에서 레퍼런스를 planning-first로 다룹니다. 현재 경로에서는 레퍼런스가 장면 설계와 검수 기준에 우선 반영됩니다.`;
+            capabilityNote.style.display = '';
+        } else {
+            capabilityNote.textContent = `현재 ${providerLabel}에서는 레퍼런스 라이브러리와 배치 선택을 우선 관리합니다. 실제 conditioning 연결은 이 프로젝트에서 아직 활성화되지 않았습니다.`;
+            capabilityNote.style.display = '';
+        }
+    }
+
+    if (welcomeBadge) {
+        welcomeBadge.textContent = isReferenceProject ? `${label} Character Workflow` : `${label} Batch Workflow`;
+    }
+
+    if (welcomeTitle) {
+        welcomeTitle.textContent = isReferenceProject ? '기준 캐릭터부터 준비하세요' : '이미지 생성을 시작하세요';
+    }
+
+    if (welcomeDescription) {
+        welcomeDescription.textContent = isReferenceProject
+            ? `${label} 프로젝트는 레퍼런스 자산을 먼저 준비한 뒤 ${providerLabel}에 보낼 장면을 정리하는 흐름이 가장 안정적입니다.`
+            : `${providerLabel} 기준으로 프롬프트 목록을 불러오고, 스타일을 설정한 후 생성하세요.`;
+    }
+
+    if (welcomeChecklist) {
+        welcomeChecklist.innerHTML = isReferenceProject
+            ? `
+                <div class="welcome-check-item">1. 레퍼런스 탭에서 프로젝트 라이브러리 상태를 확인하세요</div>
+                <div class="welcome-check-item">2. 기준 자산과 이번 배치용 임시 레퍼런스를 구분해서 준비하세요</div>
+                <div class="welcome-check-item">3. 프롬프트 탭에서 생성할 묶음을 선택한 뒤 필요한 슬롯만 골라서 시작하세요</div>
+            `
+            : `
+                <div class="welcome-check-item">1. 프로젝트를 선택하세요</div>
+                <div class="welcome-check-item">2. 프롬프트를 불러오세요</div>
+                <div class="welcome-check-item">3. 스타일을 조정하고 생성하세요</div>
+            `;
+    }
+
+    if (welcomeReferenceBtn) {
+        welcomeReferenceBtn.style.display = isReferenceProject ? '' : 'none';
+    }
+
+    const referenceNav = document.querySelector('.nav-item[data-tab="references"]');
+    if (referenceNav) {
+        referenceNav.style.display = isReferenceProject ? '' : 'none';
+    }
+
+    const referencesTab = Utils.el('references-tab');
+    if (referencesTab) {
+        referencesTab.style.display = isReferenceProject ? '' : 'none';
+    }
+
+    const activeReferenceTab = document.querySelector('.nav-item.active[data-tab="references"]');
+    if (!isReferenceProject && activeReferenceTab) {
+        setActiveTab('dashboard');
+    }
+
+    updateProviderStatusChrome();
+}
+
+async function switchProject(projectId, options = {}) {
+    const { updateSelect = false } = options;
+    AppState.currentProject = projectId || 'kemi';
+    saveStudioState({ currentProject: AppState.currentProject });
+    resetProjectWorkspace();
+
+    if (updateSelect) {
+        const select = Utils.el(CONFIG.DOM.PROJECT_SELECTOR);
+        if (select) select.value = AppState.currentProject;
+    }
+
+    const project = AppState.availableProjects.find((item) => item.id === AppState.currentProject);
+    selectProjectProvider(project);
+    loadOperatorMode(project);
+    renderProviderSelector(project);
+    updateOperatorModeAvailability();
+    updateProjectChrome(project);
+    setActiveTab((project?.workflowMode || 'prompt-first') === 'reference-first' ? 'references' : 'dashboard');
+
+    const styleInput = Utils.el('style-prompt');
+    if (styleInput) styleInput.value = project?.generation?.style || '';
+
+    if (project?.generation?.aspectRatio) {
+        const arSelect = Utils.el('default-ar');
+        if (arSelect) arSelect.value = project.generation.aspectRatio;
+    }
+
+    loadScenePlannerState();
+
+    await loadPromptFiles();
+    await loadReferenceAssets();
+    await loadSceneTemplates();
+    await loadRecentRuns();
+    await checkExistingBatch();
+}
+
 // --- Prompt Management ---
 async function loadPromptFiles() {
     try {
-        const resp = await fetch(CONFIG.API.PROMPT_FILES);
+        const resp = await fetch(`${CONFIG.API.PROMPT_FILES}?project=${encodeURIComponent(AppState.currentProject)}`);
         const data = await resp.json();
         const select = document.getElementById(CONFIG.DOM.PROMPT_FILE_SELECTOR);
         if (!select || !data.files) return;
+        const savedState = loadStudioState();
+        const preferredFile = savedState.promptFiles?.[AppState.currentProject];
         select.innerHTML = '';
         data.files.forEach(f => {
             const opt = document.createElement('option');
             opt.value = f; opt.innerText = f;
-            if (f === 'thumbnail-prompts.csv') opt.selected = true;
+            if (f === preferredFile || (!preferredFile && f === data.defaultFile) || (!preferredFile && !data.defaultFile && f === 'thumbnail-prompts.csv')) {
+                opt.selected = true;
+            }
             select.appendChild(opt);
         });
-        loadPromptContent(select.value);
+        if (select.value) {
+            await loadPromptContent(select.value);
+        } else {
+            renderPromptTable([]);
+        }
     } catch (e) { console.error("Failed to load files", e); }
 }
 
 async function loadPromptContent(filename) {
     try {
-        const resp = await fetch(`${CONFIG.API.PROMPT_CONTENT}?filename=${filename}`);
+        const resp = await fetch(`${CONFIG.API.PROMPT_CONTENT}?project=${encodeURIComponent(AppState.currentProject)}&filename=${encodeURIComponent(filename)}`);
         const data = await resp.json();
         if (data.prompts) {
+            const savedState = loadStudioState();
+            saveStudioState({
+                currentProject: AppState.currentProject,
+                promptFiles: {
+                    ...(savedState.promptFiles || {}),
+                    [AppState.currentProject]: filename
+                }
+            });
             AppState.currentPrompts = data.prompts;
             renderPromptTable(AppState.currentPrompts);
         }
     } catch (e) { console.error("Failed to load content", e); }
+}
+
+async function loadReferenceAssets() {
+    try {
+        const resp = await fetch(`${CONFIG.API.REFERENCE_ASSETS}?project=${encodeURIComponent(AppState.currentProject)}`);
+        const data = await resp.json();
+        AppState.referenceAssets = data.assets || [];
+        AppState.referenceStatus = data.status || null;
+        AppState.referencePolicy = data.referencePolicy || {};
+        AppState.referenceDefinitions = data.definitionFiles || [];
+
+        const rootEl = Utils.el(CONFIG.DOM.REFERENCE_ROOT);
+        if (rootEl) rootEl.textContent = data.rootDir || '';
+        const libraryCountEl = Utils.el(CONFIG.DOM.REFERENCE_LIBRARY_COUNT);
+        if (libraryCountEl) libraryCountEl.textContent = `${data.status?.libraryAssets || 0}`;
+        const tempCountEl = Utils.el(CONFIG.DOM.REFERENCE_TEMP_COUNT);
+        if (tempCountEl) tempCountEl.textContent = `${data.status?.temporaryAssets || 0}`;
+
+        const savedState = loadStudioState();
+        const selectedPaths = new Set(savedState.selectedReferenceAssets?.[AppState.currentProject] || []);
+        AppState.selectedReferenceAssets = AppState.referenceAssets.filter((asset) => selectedPaths.has(asset.relativePath));
+        renderReferenceAssets();
+    } catch (e) {
+        console.error('Failed to load reference assets', e);
+        AppState.referenceAssets = [];
+        AppState.referenceStatus = null;
+        AppState.referencePolicy = {};
+        AppState.selectedReferenceAssets = [];
+        AppState.referenceDefinitions = [];
+        renderReferenceAssets();
+    }
+}
+
+function getSceneTemplateCompositionLabel(value) {
+    const labels = {
+        single: '1 person',
+        duo: '2 people',
+        group: 'group',
+        custom: 'custom'
+    };
+    return labels[value] || value || 'custom';
+}
+
+function summarizeTemplateAssets(template) {
+    const assets = template?.referenceAssetPaths || [];
+    if (!assets.length) return 'No reference assets saved';
+    const names = assets
+        .map((path) => path.split('/').pop() || path)
+        .slice(0, 3)
+        .join(', ');
+    const remaining = assets.length > 3 ? ` +${assets.length - 3}` : '';
+    return `${names}${remaining}`;
+}
+
+function summarizeTemplateSceneDraft(template) {
+    const draft = template?.sceneDraft || template?.meta?.sceneDraft || {};
+    const parts = [
+        draft.situation,
+        draft.interaction,
+        draft.background,
+        draft.location
+    ].filter(Boolean);
+    return parts.length ? parts.slice(0, 2).join(' | ') : 'No scene planner draft';
+}
+
+function getSceneTemplateEditorState() {
+    return {
+        id: AppState.activeSceneTemplateId,
+        name: Utils.val(CONFIG.DOM.TEMPLATE_NAME).trim(),
+        composition: Utils.val(CONFIG.DOM.TEMPLATE_COMPOSITION) || 'single',
+        description: Utils.val(CONFIG.DOM.TEMPLATE_DESCRIPTION).trim(),
+        reference_asset_paths: AppState.selectedReferenceAssets.map((asset) => asset.relativePath),
+        style_prompt: Utils.val('style-prompt'),
+        negative_prompt: Utils.val('negative-prompt'),
+        global_aspect_ratio: Utils.val('default-ar') || CONFIG.DEFAULTS.AR,
+        batch_count: parseInt(Utils.val('batch-count'), 10) || CONFIG.DEFAULTS.REPEAT,
+        steps: parseInt(Utils.val('steps'), 10) || CONFIG.DEFAULTS.STEPS,
+        types: ['thumb', 'hero'],
+        scene_draft: getScenePlannerState(),
+        meta: {
+            projectName: AppState.availableProjects.find((item) => item.id === AppState.currentProject)?.name || AppState.currentProject
+        }
+    };
+}
+
+function fillSceneTemplateEditor(template = null) {
+    Utils.setVal(CONFIG.DOM.TEMPLATE_NAME, template?.name || '');
+    Utils.setVal(CONFIG.DOM.TEMPLATE_COMPOSITION, template?.composition || 'single');
+    Utils.setVal(CONFIG.DOM.TEMPLATE_DESCRIPTION, template?.description || '');
+}
+
+function clearSceneTemplateEditor(options = {}) {
+    const { preserveSelection = false } = options;
+    AppState.activeSceneTemplateId = null;
+    fillSceneTemplateEditor(null);
+    renderSceneTemplates();
+    if (!preserveSelection) {
+        lucide.createIcons();
+    }
+}
+
+async function loadSceneTemplates() {
+    try {
+        const resp = await fetch(`${CONFIG.API.TEMPLATES}?project=${encodeURIComponent(AppState.currentProject)}`);
+        const data = await resp.json();
+        AppState.sceneTemplates = data.templates || [];
+    } catch (e) {
+        console.error('Failed to load scene templates', e);
+        AppState.sceneTemplates = [];
+    }
+    if (AppState.activeSceneTemplateId && !AppState.sceneTemplates.some((item) => item.id === AppState.activeSceneTemplateId)) {
+        AppState.activeSceneTemplateId = null;
+    }
+    renderSceneTemplates();
+}
+
+async function loadRecentRuns() {
+    try {
+        const resp = await fetch(`${CONFIG.API.RUNS}?project=${encodeURIComponent(AppState.currentProject)}&limit=12`);
+        const data = await resp.json();
+        AppState.recentRuns = data.runs || [];
+    } catch (e) {
+        console.error('Failed to load recent runs', e);
+        AppState.recentRuns = [];
+    }
+    const displayedSummary = AppState.displayedRunSummary;
+    const displayedRun = AppState.recentRuns.find((item) => item.runId === AppState.displayedRunId)
+        || (displayedSummary && displayedSummary.projectId === AppState.currentProject ? displayedSummary : null);
+    const assistedRun = displayedRun
+        ? (displayedRun.mode === 'assisted' ? displayedRun : null)
+        : AppState.recentRuns.find((item) => item.mode === 'assisted');
+    if (assistedRun?.runId) {
+        AppState.retryFocusRunId = assistedRun.runId;
+        await Promise.all([
+            loadRunCodexHandoff(assistedRun.runId, false),
+            loadRetrySuggestion(assistedRun.runId, false),
+            loadRetryLineage(assistedRun.runId, false)
+        ]);
+    } else {
+        AppState.retrySuggestion = null;
+        AppState.retryLineage = null;
+        AppState.retryFocusRunId = null;
+        AppState.currentRunCodexHandoff = null;
+        AppState.currentRunCodexHandoffRequestKey = '';
+    }
+    renderRunComparePanel();
+}
+
+async function loadRetrySuggestion(runId, shouldRender = true) {
+    if (!runId) {
+        AppState.retrySuggestion = null;
+        if (shouldRender) renderRunComparePanel();
+        return;
+    }
+    const requestKey = buildRetryRequestKey(AppState.currentProject, runId);
+    AppState.retrySuggestionRequestKey = requestKey;
+    try {
+        const resp = await fetch(`${CONFIG.API.RUNS}/${encodeURIComponent(runId)}/retry-suggestion?project=${encodeURIComponent(AppState.currentProject)}`);
+        const data = await resp.json();
+        if (!resp.ok || data.detail) {
+            throw new Error(data.detail || 'Failed to load retry suggestion');
+        }
+        if (AppState.retrySuggestionRequestKey === requestKey) {
+            AppState.retrySuggestion = data;
+        }
+    } catch (e) {
+        console.error('Failed to load retry suggestion', e);
+        if (AppState.retrySuggestionRequestKey === requestKey) {
+            AppState.retrySuggestion = null;
+        }
+    }
+    if (shouldRender) renderRunComparePanel();
+}
+
+async function loadRetryLineage(runId, shouldRender = true) {
+    if (!runId) {
+        AppState.retryLineage = null;
+        if (shouldRender) renderRunComparePanel();
+        return;
+    }
+    const requestKey = buildRetryRequestKey(AppState.currentProject, runId);
+    AppState.retryLineageRequestKey = requestKey;
+    try {
+        const resp = await fetch(`${CONFIG.API.RUNS}/${encodeURIComponent(runId)}/lineage?project=${encodeURIComponent(AppState.currentProject)}`);
+        const data = await resp.json();
+        if (!resp.ok || data.detail) {
+            throw new Error(data.detail || 'Failed to load retry lineage');
+        }
+        if (AppState.retryLineageRequestKey === requestKey) {
+            AppState.retryLineage = data;
+        }
+    } catch (e) {
+        console.error('Failed to load retry lineage', e);
+        if (AppState.retryLineageRequestKey === requestKey) {
+            AppState.retryLineage = null;
+        }
+    }
+    if (shouldRender) renderRunComparePanel();
+}
+
+function formatRunTimestamp(value) {
+    if (!value) return 'unknown time';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+}
+
+function getCompareRunBuckets() {
+    const displayedRun = AppState.recentRuns.find((item) => item.runId === AppState.displayedRunId)
+        || AppState.displayedRunSummary;
+    let direct = AppState.recentRuns.find((item) => item.mode === 'direct') || null;
+    let assisted = AppState.recentRuns.find((item) => item.mode === 'assisted') || null;
+    if (displayedRun?.mode === 'direct') {
+        direct = displayedRun;
+    } else if (displayedRun?.mode === 'assisted') {
+        assisted = displayedRun;
+    }
+    return [
+        { key: 'direct', title: 'Direct Run', run: direct },
+        { key: 'assisted', title: 'Assisted Run', run: assisted }
+    ];
+}
+
+function normalizeCompareValue(value) {
+    if (Array.isArray(value)) {
+        return value.join(', ') || '-';
+    }
+    if (value === null || value === undefined || value === '') {
+        return '-';
+    }
+    return String(value);
+}
+
+function compareRunField(directRun, assistedRun, label, getValue) {
+    const directValue = normalizeCompareValue(getValue(directRun));
+    const assistedValue = normalizeCompareValue(getValue(assistedRun));
+    return {
+        label,
+        directValue,
+        assistedValue,
+        same: directValue === assistedValue
+    };
+}
+
+function buildRunDiffItems(directRun, assistedRun) {
+    return [
+        compareRunField(directRun, assistedRun, 'Provider', (run) => run.providerId),
+        compareRunField(directRun, assistedRun, 'Operator', (run) => run.operatorMode || 'studio'),
+        compareRunField(directRun, assistedRun, 'Template', (run) => run.templateId || 'none'),
+        compareRunField(directRun, assistedRun, 'Retry From', (run) => run.retry?.fromRunId || 'root'),
+        compareRunField(directRun, assistedRun, 'Scene', (run) => run.sceneSummary || ''),
+        compareRunField(directRun, assistedRun, 'References', (run) => run.referenceCount || 0),
+        compareRunField(directRun, assistedRun, 'Prompts', (run) => run.promptCount || 0),
+        compareRunField(directRun, assistedRun, 'Outputs', (run) => run.outputTypes || []),
+        compareRunField(directRun, assistedRun, 'Status', (run) => run.isRunning ? 'running' : (run.finishStatus || 'unknown')),
+        compareRunField(directRun, assistedRun, 'Success', (run) => `${run.succeeded || 0}/${run.total || 0}`),
+        compareRunField(directRun, assistedRun, 'Review Coverage', (run) => {
+            const review = run.reviewSummary || {};
+            return `A${review.approved || 0} / R${review.rejected || 0} / N${review.noted || 0}`;
+        }),
+        compareRunField(directRun, assistedRun, 'Review Notes', (run) => {
+            const highlights = run.reviewSummary?.noteHighlights || [];
+            return highlights.length ? highlights.join(' | ') : '';
+        })
+    ];
+}
+
+function renderRunDiffSummary(directRun, assistedRun) {
+    const container = Utils.el(CONFIG.DOM.RUN_COMPARE_DIFF);
+    if (!container) return;
+
+    if (!directRun || !assistedRun) {
+        container.innerHTML = `
+            <div class="run-empty">
+                Compare view appears when both a recent direct run and a recent assisted run exist.
+            </div>
+        `;
+        return;
+    }
+
+    const diffItems = buildRunDiffItems(directRun, assistedRun);
+    const sameCount = diffItems.filter((item) => item.same).length;
+    const diffCount = diffItems.length - sameCount;
+
+    container.innerHTML = `
+        <div class="run-diff-header">
+            <strong>Direct vs Assisted Diff</strong>
+            <span class="run-diff-sub">${sameCount} same / ${diffCount} different</span>
+        </div>
+        <div class="run-diff-grid">
+            ${diffItems.map((item) => `
+                <div class="run-diff-item">
+                    <div class="run-diff-label-row">
+                        <span class="run-diff-label">${item.label}</span>
+                        <span class="run-diff-state ${item.same ? 'same' : 'diff'}">${item.same ? 'same' : 'different'}</span>
+                    </div>
+                    <div class="run-diff-values">
+                        <div class="run-diff-value">
+                            <span class="run-diff-mode">Direct</span>
+                            <span>${item.directValue}</span>
+                        </div>
+                        <div class="run-diff-value">
+                            <span class="run-diff-mode">Assisted</span>
+                            <span>${item.assistedValue}</span>
+                        </div>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function getRetryOutcomeTone(label) {
+    if (label === 'improved') return 'improved';
+    if (label === 'worse') return 'worse';
+    return 'unchanged';
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderRetryLineagePanel() {
+    const container = Utils.el(CONFIG.DOM.RUN_RETRY_LINEAGE);
+    if (!container) return;
+
+    const lineage = AppState.retryLineage;
+    if (!lineage || !(lineage.items || []).length) {
+        container.innerHTML = `
+            <div class="run-empty">
+                Retry history appears once an assisted run is retried from review suggestions.
+            </div>
+        `;
+        return;
+    }
+
+    const items = lineage.items || [];
+    const currentItem = items.find((item) => item.isCurrent) || items[items.length - 1];
+    const summaryText = lineage.hasRetries
+        ? `${items.length} runs in this retry chain. Current focus: ${String(lineage.currentRunId || '').slice(0, 8)}`
+        : 'No retry chain yet for this assisted run.';
+
+    container.innerHTML = `
+        <div class="retry-lineage-header">
+            <div>
+                <strong>Retry History</strong>
+                <div class="retry-lineage-summary">${summaryText}</div>
+            </div>
+            <div class="run-compare-sub">${currentItem?.sceneSummary || 'No scene summary'}</div>
+        </div>
+        <div class="retry-lineage-list">
+            ${items.map((item) => {
+                const review = item.reviewSummary || {};
+                const comparison = item.comparisonToParent || null;
+                const changes = item.changesFromParent || null;
+                const retry = item.retry || {};
+                const outcomeTone = getRetryOutcomeTone(comparison?.label);
+                const depthClass = `depth-${Math.min(item.depth || 0, 4)}`;
+                const noteText = (review.noteHighlights || []).join(' | ') || 'No review notes';
+                const retryMeta = retry.fromRunId
+                    ? `Retry from ${String(retry.fromRunId).slice(0, 8)}${retry.source ? ` via ${retry.source}` : ''}`
+                    : 'Root run';
+                return `
+                    <div class="retry-lineage-item ${depthClass} ${item.isCurrent ? 'current' : ''}">
+                        <div class="retry-lineage-top">
+                            <div class="retry-lineage-title">
+                                <strong>${item.isCurrent ? 'Current Run' : `Run ${String(item.runId || '').slice(0, 8)}`}</strong>
+                                <span class="run-compare-sub">${formatRunTimestamp(item.updatedAt || item.createdAt)}</span>
+                            </div>
+                            <div class="retry-lineage-badges">
+                                <span class="mode-badge ${item.mode}">${item.mode}</span>
+                                <span class="run-status-badge">${item.isRunning ? 'running' : (item.finishStatus || 'unknown')}</span>
+                                ${item.isCurrent ? '<span class="run-status-badge">current</span>' : ''}
+                                ${retry.isRetry ? '<span class="run-status-badge">retry</span>' : '<span class="run-status-badge">root</span>'}
+                            </div>
+                        </div>
+                        <div class="retry-lineage-meta">
+                            <span>${item.succeeded || 0}/${item.total || 0} success</span>
+                            <span>A${review.approved || 0} / R${review.rejected || 0} / Notes ${review.noted || 0}</span>
+                            <span>${item.templateId || 'no template'}</span>
+                            <span>${retryMeta}</span>
+                        </div>
+                        ${comparison ? `<div class="retry-lineage-outcome ${outcomeTone}"><strong>${comparison.label}</strong> ${comparison.summary}</div>` : ''}
+                        ${changes && changes.count ? `
+                            <div class="retry-lineage-change-block">
+                                <label>Request Changes</label>
+                                <div class="retry-lineage-change-summary">${escapeHtml(changes.summary || '')}</div>
+                                <div class="retry-lineage-change-list">
+                                    ${(changes.items || []).map((change) => `<span class="retry-chip">${escapeHtml(change.detail || '')}</span>`).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+                        <div class="run-compare-sub">${noteText}</div>
+                        <div class="retry-lineage-actions">
+                            <button class="btn btn-secondary lineage-load-btn" data-run-id="${item.runId}">View Run</button>
+                        </div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+
+    container.querySelectorAll('.lineage-load-btn').forEach((button) => {
+        button.addEventListener('click', () => loadRunIntoView(button.dataset.runId));
+    });
+}
+
+function renderRetrySuggestionPanel() {
+    const container = Utils.el(CONFIG.DOM.RUN_RETRY_SUGGESTION);
+    if (!container) return;
+
+    const suggestion = AppState.retrySuggestion;
+    if (!suggestion) {
+        container.innerHTML = `
+            <div class="run-empty">
+                Retry suggestions appear for the latest assisted run after review notes are added.
+            </div>
+        `;
+        return;
+    }
+
+    const scenePatch = suggestion.sceneDraftPatch || {};
+    const patchValues = Object.entries(scenePatch).filter(([, value]) => value);
+    const styleAdds = suggestion.stylePromptAdditions || [];
+    const negativeAdds = suggestion.negativePromptAdditions || [];
+    const promptHints = suggestion.promptHints || [];
+    const sourceNotes = suggestion.sourceNotes || [];
+
+    container.innerHTML = `
+        <div class="retry-suggestion-header">
+            <div>
+                <strong>Suggested Assisted Retry</strong>
+                <div class="retry-suggestion-summary">${suggestion.summary || 'No retry summary available.'}</div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="btn btn-secondary" id="apply-retry-suggestion-btn">Apply To Planner</button>
+                <button class="btn btn-primary" id="start-retry-suggestion-btn">Retry This Run</button>
+            </div>
+        </div>
+        <div class="retry-suggestion-grid">
+            <div class="retry-suggestion-card">
+                <label>Scene Planner Patch</label>
+                ${patchValues.length ? `
+                    <div class="retry-note-list">
+                        ${patchValues.map(([key, value]) => `<div class="retry-note-item"><strong>${key}</strong>${value}</div>`).join('')}
+                    </div>
+                ` : '<div class="run-empty">No scene patch suggested.</div>'}
+            </div>
+            <div class="retry-suggestion-card">
+                <label>Prompt Hints</label>
+                ${promptHints.length ? `<div class="retry-chip-row">${promptHints.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">No prompt hints yet.</div>'}
+                <label style="margin-top: 8px;">Style Additions</label>
+                ${styleAdds.length ? `<div class="retry-chip-row">${styleAdds.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">No style additions.</div>'}
+                <label style="margin-top: 8px;">Negative Additions</label>
+                ${negativeAdds.length ? `<div class="retry-chip-row">${negativeAdds.map((item) => `<span class="retry-chip">${item}</span>`).join('')}</div>` : '<div class="run-empty">No negative additions.</div>'}
+            </div>
+        </div>
+        <div class="retry-suggestion-card">
+            <label>Source Review Notes</label>
+            ${sourceNotes.length ? `
+                <div class="retry-note-list">
+                    ${sourceNotes.map((item) => `<div class="retry-note-item"><strong>${item.status}</strong>${item.note}</div>`).join('')}
+                </div>
+            ` : '<div class="run-empty">Add review notes to rejected or approved results to get better retry guidance.</div>'}
+        </div>
+    `;
+
+    Utils.el('apply-retry-suggestion-btn')?.addEventListener('click', applyRetrySuggestionToPlanner);
+    Utils.el('start-retry-suggestion-btn')?.addEventListener('click', startRetrySuggestionRun);
+}
+
+function mergeTextValue(base, additions) {
+    const parts = [base || '', ...(additions || [])].filter(Boolean);
+    return parts.join(base ? ', ' : '');
+}
+
+function applyRetrySuggestionToPlanner() {
+    const suggestion = AppState.retrySuggestion;
+    if (!suggestion) return;
+
+    Utils.setVal(CONFIG.DOM.GENERATION_MODE, 'assisted');
+    const patch = suggestion.sceneDraftPatch || {};
+    const current = getScenePlannerState();
+    setScenePlannerState({
+        situation: patch.situation || current.situation,
+        interaction: patch.interaction || current.interaction,
+        background: patch.background || current.background,
+        location: patch.location || current.location,
+        lighting: patch.lighting || current.lighting,
+    });
+    saveScenePlannerState();
+
+    const stylePrompt = Utils.val('style-prompt');
+    const negativePrompt = Utils.val('negative-prompt');
+    Utils.setVal('style-prompt', mergeTextValue(stylePrompt, suggestion.stylePromptAdditions || []));
+    Utils.setVal('negative-prompt', mergeTextValue(negativePrompt, suggestion.negativePromptAdditions || []));
+
+    if (suggestion.templateId) {
+        const matchingTemplate = AppState.sceneTemplates.find((item) => item.id === suggestion.templateId);
+        if (matchingTemplate) {
+            AppState.activeSceneTemplateId = matchingTemplate.id;
+            fillSceneTemplateEditor(matchingTemplate);
+            renderSceneTemplates();
+        }
+    }
+
+    updateGenerationModeNote();
+    setActiveTab('prompts');
+    showToast('Retry suggestion applied to planner', 'success');
+}
+
+function buildRetrySceneSpecFromSuggestion(suggestion) {
+    const sourceSceneSpec = suggestion.sceneSpec || {};
+    const sourceScene = sourceSceneSpec.scene || {};
+    const sourceVisual = sourceSceneSpec.visual || {};
+    const patch = suggestion.sceneDraftPatch || {};
+    return {
+        project_id: AppState.currentProject,
+        template_id: suggestion.templateId || sourceSceneSpec.template_id || null,
+        actors: sourceSceneSpec.actors || [],
+        scene: {
+            situation: patch.situation || sourceScene.situation || '',
+            interaction: patch.interaction || sourceScene.interaction || '',
+            background: patch.background || sourceScene.background || '',
+            location: patch.location || sourceScene.location || ''
+        },
+        props: sourceSceneSpec.props || [],
+        visual: {
+            framing: sourceVisual.framing || '',
+            camera_distance: sourceVisual.camera_distance || '',
+            lighting: patch.lighting || sourceVisual.lighting || ''
+        },
+        style: sourceSceneSpec.style || [],
+        outputs: suggestion.outputTypes || sourceSceneSpec.outputs || ['thumb', 'hero'],
+        variation: sourceSceneSpec.variation || {}
+    };
+}
+
+function buildRetryPayloadFromSuggestion() {
+    const suggestion = AppState.retrySuggestion;
+    if (!suggestion) return null;
+    const baseGeneration = suggestion.baseGeneration || {};
+    const stylePrompt = mergeTextValue(baseGeneration.stylePrompt || '', suggestion.stylePromptAdditions || []);
+    const negativePrompt = mergeTextValue(baseGeneration.negativePrompt || '', suggestion.negativePromptAdditions || []);
+    return {
+        project: AppState.currentProject,
+        mode: 'assisted',
+        provider_id: suggestion.providerId || null,
+        template_id: suggestion.templateId || null,
+        scene_spec: buildRetrySceneSpecFromSuggestion(suggestion),
+        prompts: [],
+        reference_assets: suggestion.referenceAssets || [],
+        types: suggestion.outputTypes || ['thumb', 'hero'],
+        style_prompt: stylePrompt,
+        negative_prompt: negativePrompt,
+        global_aspect_ratio: baseGeneration.aspectRatio || Utils.val('default-ar') || CONFIG.DEFAULTS.AR,
+        batch_count: baseGeneration.batchCount || 1,
+        steps: baseGeneration.steps || CONFIG.DEFAULTS.STEPS,
+        metadata: {
+            retry_from_run_id: suggestion.runId,
+            retry_source: 'review-suggestion'
+        }
+    };
+}
+
+async function startRetrySuggestionRun() {
+    const suggestion = AppState.retrySuggestion;
+    if (!suggestion) return;
+
+    applyRetrySuggestionToPlanner();
+    const payload = buildRetryPayloadFromSuggestion();
+    if (!payload) return;
+
+    try {
+        const preflight = await fetchPreflightValidation(payload);
+        if ((preflight.errors || []).length > 0) {
+            setActiveTab('prompts');
+            showToast(preflight.errors[0], 'error');
+            return;
+        }
+
+        setBusy(true);
+        const resp = await fetch(CONFIG.API.START_BATCH, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.detail) {
+            throw new Error(data.detail || 'Failed to start retry');
+        }
+        AppState.currentRunId = data.runId || null;
+        AppState.displayedRunId = data.runId || null;
+        AppState.displayedRunSummary = null;
+        await loadRecentRuns();
+        setActiveTab('outputs');
+        pollStatus();
+        showToast('Retry batch started', 'success');
+    } catch (e) {
+        showToast(`Retry start failed: ${e.message}`, 'error');
+        setBusy(false);
+    }
+}
+
+function resetRunViewState() {
+    AppState.displayedRunId = null;
+    AppState.displayedRunSummary = null;
+    AppState.currentRunCodexHandoff = null;
+    AppState.currentRunCodexHandoffRequestKey = '';
+    AppState.lastLogCount = 0;
+    AppState.lastResultCount = 0;
+
+    const logContainer = Utils.el(CONFIG.DOM.LOGS);
+    if (logContainer) logContainer.innerHTML = '';
+
+    const gallery = Utils.el(CONFIG.DOM.GALLERY);
+    if (gallery) gallery.innerHTML = '';
+
+    const previewEl = Utils.el(CONFIG.DOM.PREVIEW);
+    if (previewEl) {
+        previewEl.innerHTML = `
+            <div class="preview-placeholder">
+                <i data-lucide="camera"></i>
+                <p>생성된 이미지가 여기에 표시됩니다</p>
+            </div>
+        `;
+    }
+    renderRunCodexHandoffPreview();
+}
+
+function renderRunViewState() {
+    const container = Utils.el(CONFIG.DOM.RUN_VIEW_STATE);
+    if (!container) return;
+
+    const displayedRunId = AppState.displayedRunId;
+    const liveRunId = AppState.currentRunId;
+    const displayedSummary = AppState.displayedRunSummary
+        || AppState.recentRuns.find((item) => item.runId === displayedRunId)
+        || null;
+    const viewingHistorical = Boolean(displayedRunId && liveRunId && displayedRunId !== liveRunId);
+    const hasDisplayed = Boolean(displayedRunId);
+
+    if (!hasDisplayed && !liveRunId) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const copyRunHandoffButton = displayedSummary?.mode === 'assisted'
+        ? '<button class="btn btn-secondary" id="copy-run-codex-handoff-btn">Copy Run Handoff</button>'
+        : '';
+
+    if (viewingHistorical) {
+        container.innerHTML = `
+            <div class="run-view-banner historical">
+                <div class="run-view-copy">
+                    <strong>Viewing historical run</strong>
+                    <span>Run ${String(displayedRunId || '').slice(0, 8)} is open. Live run ${String(liveRunId || '').slice(0, 8)} is still tracked separately.</span>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    ${copyRunHandoffButton}
+                    <button class="btn btn-secondary" id="follow-live-run-btn">Back To Live Run</button>
+                </div>
+            </div>
+        `;
+        Utils.el('copy-run-codex-handoff-btn')?.addEventListener('click', copyFocusedRunCodexHandoff);
+        Utils.el('follow-live-run-btn')?.addEventListener('click', followLiveRun);
+        return;
+    }
+
+    const mode = displayedSummary?.mode || 'direct';
+    const statusText = displayedSummary?.isRunning ? 'running' : (displayedSummary?.finishStatus || 'ready');
+    container.innerHTML = `
+        <div class="run-view-banner live">
+            <div class="run-view-copy">
+                <strong>${liveRunId ? 'Following live run' : 'Viewing run'}</strong>
+                <span>${displayedRunId ? `Run ${String(displayedRunId).slice(0, 8)}` : 'No selected run'} · ${mode} · ${statusText}</span>
+            </div>
+            ${copyRunHandoffButton}
+        </div>
+    `;
+    Utils.el('copy-run-codex-handoff-btn')?.addEventListener('click', copyFocusedRunCodexHandoff);
+}
+
+async function loadRunIntoView(runId) {
+    try {
+        const resp = await fetch(`${CONFIG.API.RUNS}/${encodeURIComponent(runId)}?project=${encodeURIComponent(AppState.currentProject)}`);
+        const record = await resp.json();
+        if (!resp.ok || record.detail) {
+            throw new Error(record.detail || 'Failed to load run');
+        }
+        resetRunViewState();
+        const statusRecord = run_record_to_status_client(record);
+        setDisplayedRun(statusRecord);
+        AppState.currentRunCodexHandoff = record.codexHandoff || null;
+        AppState.currentRunCodexHandoffRequestKey = buildRunHandoffRequestKey(AppState.currentProject, record.runId || runId);
+        updateUI(statusRecord, { syncCurrentRun: false, syncDisplayedRun: false });
+        if ((record.mode || '').toLowerCase() === 'assisted') {
+            AppState.retryFocusRunId = record.runId || runId;
+            await Promise.all([
+                loadRetrySuggestion(record.runId || runId, false),
+                loadRetryLineage(record.runId || runId, false)
+            ]);
+        } else {
+            AppState.retryFocusRunId = null;
+            AppState.retrySuggestion = null;
+            AppState.retryLineage = null;
+            AppState.retrySuggestionRequestKey = '';
+            AppState.retryLineageRequestKey = '';
+            AppState.currentRunCodexHandoff = null;
+            AppState.currentRunCodexHandoffRequestKey = '';
+        }
+        renderRunComparePanel();
+        setActiveTab('outputs');
+    } catch (e) {
+        showToast(`Run load failed: ${e.message}`, 'error');
+    }
+}
+
+function run_record_to_status_client(record) {
+    const status = record.status || {};
+    return {
+        run_id: record.runId,
+        project: record.projectId,
+        mode: record.mode,
+        provider_id: record.providerId,
+        request: record.request || {},
+        reference_assets: record.referenceAssets || [],
+        is_running: status.is_running || false,
+        cancel_requested: status.cancel_requested || false,
+        finish_status: status.finish_status || null,
+        total: status.total || 0,
+        completed: status.completed || 0,
+        succeeded: status.succeeded || 0,
+        warnings: status.warnings || 0,
+        errors: status.errors || 0,
+        current_item: status.current_item || '',
+        logs: record.logs || [],
+        results: record.results || [],
+        timing: record.timing || { batch_start: null, image_durations: [], current_start: null }
+    };
+}
+
+function renderRunComparePanel() {
+    const panel = Utils.el(CONFIG.DOM.RUN_COMPARE_PANEL);
+    const grid = Utils.el(CONFIG.DOM.RUN_COMPARE_GRID);
+    if (!panel || !grid) return;
+
+    const buckets = getCompareRunBuckets();
+    const directRun = buckets.find((item) => item.key === 'direct')?.run || null;
+    const assistedRun = buckets.find((item) => item.key === 'assisted')?.run || null;
+    const hasAny = buckets.some((item) => item.run);
+    if (!hasAny) {
+        renderRunViewState();
+        renderRunCodexHandoffPreview();
+        grid.innerHTML = '<div class="run-empty">No recent direct or assisted runs yet.</div>';
+        renderRunDiffSummary(null, null);
+        renderRetrySuggestionPanel();
+        renderRetryLineagePanel();
+        panel.style.display = '';
+        return;
+    }
+
+    grid.innerHTML = buckets.map(({ key, title, run }) => {
+        if (!run) {
+            return `
+                <div class="run-compare-card">
+                    <div class="run-compare-top">
+                        <div class="run-compare-title">
+                            <strong>${title}</strong>
+                            <span class="run-compare-sub">No recent ${key} run</span>
+                        </div>
+                        <div class="run-compare-badges">
+                            <span class="mode-badge ${key}">${key}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        const activeClass = run.runId === AppState.displayedRunId ? 'active' : '';
+        const statusText = run.isRunning ? 'running' : (run.finishStatus || 'unknown');
+        const sceneText = run.sceneSummary || 'No scene summary';
+        const templateText = run.templateId || 'no template';
+        const outputTypes = (run.outputTypes || []).join(', ') || '-';
+        const review = run.reviewSummary || {};
+        const reviewText = `A${review.approved || 0} / R${review.rejected || 0} / Notes ${review.noted || 0}`;
+        const noteText = (review.noteHighlights || []).join(' | ') || 'No review notes';
+        const retryText = run.retry?.fromRunId ? `retry from ${String(run.retry.fromRunId).slice(0, 8)}` : 'root run';
+        return `
+            <div class="run-compare-card ${activeClass}">
+                <div class="run-compare-top">
+                    <div class="run-compare-title">
+                        <strong>${title}</strong>
+                        <span class="run-compare-sub">${formatRunTimestamp(run.updatedAt || run.createdAt)}</span>
+                    </div>
+                    <div class="run-compare-badges">
+                        <span class="mode-badge ${run.mode}">${run.mode}</span>
+                        <span class="run-status-badge">${statusText}</span>
+                    </div>
+                </div>
+                <div class="run-compare-meta">
+                    <span>Run ${String(run.runId || '').slice(0, 8)}</span>
+                    <span>${run.succeeded}/${run.total || 0} success</span>
+                    <span>${run.referenceCount || 0} refs</span>
+                    <span>${run.promptCount || 0} prompts</span>
+                    <span>${templateText}</span>
+                    <span>${outputTypes}</span>
+                    <span>${retryText}</span>
+                </div>
+                <div class="run-compare-scene">${sceneText}</div>
+                <div class="run-compare-sub">${reviewText}</div>
+                <div class="run-compare-sub">${noteText}</div>
+                <div class="run-compare-actions">
+                    <button class="btn btn-secondary run-load-btn" data-run-id="${run.runId}">View Run</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    grid.querySelectorAll('.run-load-btn').forEach((button) => {
+        button.addEventListener('click', () => loadRunIntoView(button.dataset.runId));
+    });
+
+    panel.style.display = '';
+    renderRunViewState();
+    renderRunCodexHandoffPreview();
+    renderRunDiffSummary(directRun, assistedRun);
+    renderRetrySuggestionPanel();
+    renderRetryLineagePanel();
+    lucide.createIcons();
+}
+
+function renderSceneTemplates() {
+    const list = Utils.el(CONFIG.DOM.TEMPLATE_LIST);
+    const empty = Utils.el(CONFIG.DOM.TEMPLATE_EMPTY);
+    if (!list || !empty) return;
+
+    if (!AppState.sceneTemplates.length) {
+        list.innerHTML = '';
+        empty.style.display = '';
+        lucide.createIcons();
+        return;
+    }
+
+    empty.style.display = 'none';
+    list.innerHTML = AppState.sceneTemplates.map((template) => `
+        <button type="button" class="scene-template-card ${template.id === AppState.activeSceneTemplateId ? 'active' : ''}" data-template-id="${template.id}">
+            <div class="scene-template-card-top">
+                <strong>${template.name}</strong>
+                <span class="pill">${getSceneTemplateCompositionLabel(template.composition)}</span>
+            </div>
+            <p>${template.description || 'No description'}</p>
+            <div class="scene-template-meta">
+                <span>${(template.referenceAssetPaths || []).length} refs</span>
+                <span>${template.globalAspectRatio || CONFIG.DEFAULTS.AR}</span>
+                <span>${template.steps || CONFIG.DEFAULTS.STEPS} steps</span>
+            </div>
+            <div class="scene-template-assets">${summarizeTemplateSceneDraft(template)}</div>
+            <div class="scene-template-assets">${summarizeTemplateAssets(template)}</div>
+        </button>
+    `).join('');
+
+    list.querySelectorAll('.scene-template-card').forEach((button) => {
+        button.addEventListener('click', () => {
+            const template = AppState.sceneTemplates.find((item) => item.id === button.dataset.templateId);
+            if (!template) return;
+            AppState.activeSceneTemplateId = template.id;
+            fillSceneTemplateEditor(template);
+            renderSceneTemplates();
+        });
+    });
+
+    lucide.createIcons();
+}
+
+async function saveSceneTemplate() {
+    const payload = getSceneTemplateEditorState();
+    if (!payload.name) {
+        showToast('Template name is required', 'error');
+        return;
+    }
+
+    const saveBtn = Utils.el(CONFIG.DOM.TEMPLATE_SAVE_BTN);
+    if (saveBtn) saveBtn.disabled = true;
+
+    try {
+        const resp = await fetch(CONFIG.API.TEMPLATES, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                project: AppState.currentProject,
+                template: payload
+            })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.detail) {
+            throw new Error(data.detail || 'Failed to save template');
+        }
+        AppState.activeSceneTemplateId = data.template?.id || null;
+        await loadSceneTemplates();
+        fillSceneTemplateEditor(data.template || null);
+        showToast('Scene template saved', 'success');
+    } catch (e) {
+        showToast(`Template save failed: ${e.message}`, 'error');
+    } finally {
+        if (saveBtn) saveBtn.disabled = false;
+    }
+}
+
+async function applySceneTemplate() {
+    const template = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId);
+    if (!template) {
+        showToast('Select a scene template first', 'error');
+        return;
+    }
+
+    const paths = new Set(template.referenceAssetPaths || []);
+    const selectedAssets = AppState.referenceAssets.filter((asset) => paths.has(asset.relativePath));
+    AppState.selectedReferenceAssets = selectedAssets;
+    saveReferenceAssetSelection();
+
+    Utils.setVal('style-prompt', template.stylePrompt || '');
+    Utils.setVal('negative-prompt', template.negativePrompt || '');
+    Utils.setVal('default-ar', template.globalAspectRatio || CONFIG.DEFAULTS.AR);
+    Utils.setVal('batch-count', template.batchCount || CONFIG.DEFAULTS.REPEAT);
+    Utils.setVal('steps', template.steps || CONFIG.DEFAULTS.STEPS);
+    const stepsVal = Utils.el('steps-val');
+    if (stepsVal) stepsVal.innerText = `${template.steps || CONFIG.DEFAULTS.STEPS}`;
+    setScenePlannerState(template.sceneDraft || template.meta?.sceneDraft || {});
+    saveScenePlannerState();
+
+    fillSceneTemplateEditor(template);
+    renderReferenceAssets();
+
+    const missingCount = (template.referenceAssetPaths || []).length - selectedAssets.length;
+    if (missingCount > 0) {
+        showToast(`Template applied with ${missingCount} missing assets`, 'warning');
+    } else {
+        showToast('Scene template applied', 'success');
+    }
+}
+
+async function deleteSceneTemplate() {
+    const template = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId);
+    if (!template) {
+        showToast('Select a scene template first', 'error');
+        return;
+    }
+
+    const deleteBtn = Utils.el(CONFIG.DOM.TEMPLATE_DELETE_BTN);
+    if (deleteBtn) deleteBtn.disabled = true;
+
+    try {
+        const resp = await fetch(`${CONFIG.API.TEMPLATES}/${encodeURIComponent(template.id)}?project=${encodeURIComponent(AppState.currentProject)}`, {
+            method: 'DELETE'
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.detail) {
+            throw new Error(data.detail || 'Failed to delete template');
+        }
+        AppState.activeSceneTemplateId = null;
+        fillSceneTemplateEditor(null);
+        await loadSceneTemplates();
+        showToast('Scene template deleted', 'success');
+    } catch (e) {
+        showToast(`Template delete failed: ${e.message}`, 'error');
+    } finally {
+        if (deleteBtn) deleteBtn.disabled = false;
+    }
+}
+
+function getSingleSelectReferenceSlots() {
+    const slots = AppState.referencePolicy?.singleSelectSlots;
+    return new Set(Array.isArray(slots) && slots.length > 0 ? slots : ['identity', 'emotion', 'role', 'scene']);
+}
+
+function getReferenceSlotLabel(slot) {
+    const labels = {
+        identity: 'Identity',
+        emotion: 'Emotion',
+        role: 'Role',
+        scene: 'Scene',
+        style: 'Style',
+        prop: 'Prop',
+        extra: 'Extra'
+    };
+    return labels[slot] || slot;
+}
+
+function getSelectedReferenceAssetsBySlot() {
+    return AppState.selectedReferenceAssets.reduce((acc, asset) => {
+        const slot = asset.slot || 'extra';
+        if (!acc[slot]) acc[slot] = [];
+        acc[slot].push(asset);
+        return acc;
+    }, {});
+}
+
+function renderReferenceDefinitionFiles() {
+    const container = Utils.el(CONFIG.DOM.REFERENCE_DEFINITIONS);
+    if (!container) return;
+    if (!AppState.referenceDefinitions.length) {
+        container.innerHTML = '';
+        return;
+    }
+    container.innerHTML = `
+        <label>Definition Files</label>
+        <div class="reference-definition-list">
+            ${AppState.referenceDefinitions.map((item) => `<span class="reference-definition-chip">${item.relativePath}</span>`).join('')}
+        </div>
+    `;
+}
+
+function renderReferenceUploadPresets() {
+    const container = Utils.el(CONFIG.DOM.REFERENCE_PRESET_GROUP);
+    if (!container) return;
+    const presets = AppState.referencePolicy?.libraryPresets || [];
+    if (!presets.length) {
+        container.innerHTML = '';
+        return;
+    }
+    container.innerHTML = `
+        <label>Quick Paths</label>
+        <div class="reference-preset-chips">
+            ${presets.map((preset) => `
+                <button type="button" class="reference-preset-chip" data-path="${preset.path}">
+                    ${preset.label}
+                </button>
+            `).join('')}
+        </div>
+    `;
+    container.querySelectorAll('.reference-preset-chip').forEach((button) => {
+        button.addEventListener('click', () => {
+            const targetDirInput = Utils.el(CONFIG.DOM.REFERENCE_TARGET_DIR);
+            if (targetDirInput) targetDirInput.value = button.dataset.path || '';
+        });
+    });
+}
+
+function renderReferenceBlueprintGroup(title, description, presets, emptyMessage) {
+    const items = presets || [];
+    return `
+        <div class="reference-bucket blueprint">
+            <div class="reference-bucket-header">
+                <div>
+                    <strong>${title}</strong>
+                    <p>${description}</p>
+                </div>
+                <span>${items.length}개 경로</span>
+            </div>
+            ${items.length > 0 ? `
+                <div class="reference-blueprint-grid">
+                    ${items.map((preset) => `
+                        <button type="button" class="reference-blueprint-card" data-path="${preset.path}">
+                            <strong>${preset.label}</strong>
+                            <span>${preset.path}</span>
+                        </button>
+                    `).join('')}
+                </div>
+            ` : `
+                <div class="reference-bucket-empty">${emptyMessage}</div>
+            `}
+        </div>
+    `;
+}
+
+function saveReferenceAssetSelection() {
+    const savedState = loadStudioState();
+    saveStudioState({
+        currentProject: AppState.currentProject,
+        selectedReferenceAssets: {
+            ...(savedState.selectedReferenceAssets || {}),
+            [AppState.currentProject]: AppState.selectedReferenceAssets.map((asset) => asset.relativePath)
+        }
+    });
+}
+
+function updateReferenceSelectionSummary() {
+    const countEl = Utils.el(CONFIG.DOM.REFERENCE_SELECTION_COUNT);
+    if (countEl) {
+        countEl.textContent = `${AppState.selectedReferenceAssets.length}개 선택됨`;
+    }
+
+    const previewEl = Utils.el(CONFIG.DOM.REFERENCE_SELECTION_PREVIEW);
+    if (previewEl) {
+        const grouped = getSelectedReferenceAssetsBySlot();
+        const summary = Object.entries(grouped).map(([slot, items]) => {
+            const label = getReferenceSlotLabel(slot);
+            const names = items.map((asset) => asset.name).slice(0, 2).join(', ');
+            const suffix = items.length > 2 ? ` 외 ${items.length - 2}개` : '';
+            return `${label}: ${names}${suffix}`;
+        });
+        previewEl.textContent = summary.length > 0 ? summary.join(' | ') : '선택된 레퍼런스 없음';
+    }
+}
+
+function toggleReferenceAsset(relativePath, checked) {
+    const asset = AppState.referenceAssets.find((item) => item.relativePath === relativePath);
+    if (!asset) return;
+
+    if (checked) {
+        if (getSingleSelectReferenceSlots().has(asset.slot)) {
+            AppState.selectedReferenceAssets = AppState.selectedReferenceAssets.filter((item) => item.slot !== asset.slot);
+        }
+        if (!AppState.selectedReferenceAssets.some((item) => item.relativePath === relativePath)) {
+            AppState.selectedReferenceAssets.push(asset);
+        }
+    } else {
+        AppState.selectedReferenceAssets = AppState.selectedReferenceAssets.filter((item) => item.relativePath !== relativePath);
+    }
+
+    saveReferenceAssetSelection();
+    renderReferenceAssets();
+}
+
+function renderReferenceStatus() {
+    const container = Utils.el(CONFIG.DOM.REFERENCE_STATUS_GRID);
+    if (!container) return;
+
+    const slotStatus = AppState.referenceStatus?.slotStatus || [];
+    if (!slotStatus.length) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const selectedBySlot = getSelectedReferenceAssetsBySlot();
+    container.innerHTML = slotStatus.map((item) => {
+        const statusClass = item.filled ? 'filled' : (item.required ? 'missing' : 'pending');
+        const selectedCount = selectedBySlot[item.slot]?.length || 0;
+        const badge = item.required ? '필수' : (item.recommended ? '권장' : '선택');
+        return `
+            <div class="reference-status-card ${statusClass}">
+                <div class="reference-status-top">
+                    <strong>${getReferenceSlotLabel(item.slot)}</strong>
+                    <span class="reference-status-badge">${badge}</span>
+                </div>
+                <div class="reference-status-count">${item.count}개 라이브러리</div>
+                <div class="reference-status-sub">${selectedCount > 0 ? `이번 배치 ${selectedCount}개 선택` : '이번 배치 선택 없음'}</div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderReferenceSectionGroup(title, description, assets) {
+    if (!assets.length) {
+        return `
+            <div class="reference-bucket">
+                <div class="reference-bucket-header">
+                    <div>
+                        <strong>${title}</strong>
+                        <p>${description}</p>
+                    </div>
+                    <span>0개</span>
+                </div>
+                <div class="reference-bucket-empty">아직 등록된 자산이 없습니다.</div>
+            </div>
+        `;
+    }
+
+    const sections = assets.reduce((acc, asset) => {
+        const key = asset.section || 'misc';
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(asset);
+        return acc;
+    }, {});
+
+    return `
+        <div class="reference-bucket">
+            <div class="reference-bucket-header">
+                <div>
+                    <strong>${title}</strong>
+                    <p>${description}</p>
+                </div>
+                <span>${assets.length}개</span>
+            </div>
+            ${Object.entries(sections).map(([section, items]) => `
+                <div class="reference-section">
+                    <div class="reference-section-header">
+                        <span>${section}</span>
+                        <span>${items.length}개</span>
+                    </div>
+                    <div class="reference-card-grid">
+                        ${items.map((asset) => `
+                            <label class="reference-card ${AppState.selectedReferenceAssets.some((item) => item.relativePath === asset.relativePath) ? 'selected' : ''}">
+                                <div class="reference-card-check">
+                                    <input type="checkbox" class="reference-checkbox" data-relative-path="${asset.relativePath}" ${AppState.selectedReferenceAssets.some((item) => item.relativePath === asset.relativePath) ? 'checked' : ''}>
+                                    <span>${asset.character ? `${asset.character} / ${asset.slot}` : (asset.group || asset.section)}</span>
+                                </div>
+                                <img src="${asset.previewUrl}" alt="${asset.name}" loading="lazy">
+                                <div class="reference-card-body">
+                                    <strong>${asset.name}</strong>
+                                    <span>${asset.filename}</span>
+                                    <span>${getReferenceSlotLabel(asset.slot)}</span>
+                                </div>
+                            </label>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderReferenceAssets() {
+    const grid = Utils.el(CONFIG.DOM.REFERENCE_GRID);
+    const empty = Utils.el(CONFIG.DOM.REFERENCE_EMPTY);
+    if (!grid || !empty) return;
+
+    updateReferenceSelectionSummary();
+    renderReferenceDefinitionFiles();
+    renderReferenceUploadPresets();
+    renderReferenceStatus();
+
+    const targetDirInput = Utils.el(CONFIG.DOM.REFERENCE_TARGET_DIR);
+    if (targetDirInput && !targetDirInput.value) {
+        const preferredPath = AppState.referencePolicy?.libraryPresets?.[0]?.path || AppState.referencePolicy?.temporaryRoot || 'temp';
+        targetDirInput.value = preferredPath;
+    }
+
+    if (AppState.referenceAssets.length === 0) {
+        empty.style.display = '';
+        const hint = AppState.referenceDefinitions.length > 0
+            ? `정의 파일 ${AppState.referenceDefinitions.map((item) => item.filename).join(', ')} 는 있지만 실제 이미지 자산은 아직 없습니다.`
+            : '기준 캐릭터, 감정 시트, 역할 키트를 먼저 넣어두세요';
+        empty.innerHTML = `
+            <i data-lucide="folder-search"></i>
+            <p>아직 등록된 레퍼런스 이미지가 없습니다</p>
+            <p class="empty-hint">${hint}</p>
+            <p class="empty-hint">아래 구조 가이드를 보고 바로 어떤 폴더에 무엇을 넣을지 결정할 수 있습니다.</p>
+        `;
+        const presets = AppState.referencePolicy?.libraryPresets || [];
+        const libraryPresets = presets.filter((item) => !(item.path || '').startsWith(`${AppState.referencePolicy?.temporaryRoot || 'temp'}/`));
+        const temporaryPresets = presets.filter((item) => (item.path || '').startsWith(`${AppState.referencePolicy?.temporaryRoot || 'temp'}/`));
+        grid.innerHTML = [
+            renderReferenceBlueprintGroup('프로젝트 라이브러리 구조', '항상 유지되는 기준 자산 경로입니다. 베이스, 감정, 역할, 장면을 먼저 채우면 됩니다.', libraryPresets, '아직 정의된 라이브러리 경로가 없습니다.'),
+            renderReferenceBlueprintGroup('임시 레퍼런스 구조', '이번 배치에서만 쓰는 참고 이미지는 임시 경로에 넣고, 가치가 있으면 나중에 라이브러리로 승격합니다.', temporaryPresets, '임시 경로가 아직 정의되지 않았습니다.')
+        ].join('');
+        grid.querySelectorAll('.reference-blueprint-card').forEach((button) => {
+            button.addEventListener('click', () => {
+                if (targetDirInput) targetDirInput.value = button.dataset.path || '';
+            });
+        });
+        lucide.createIcons();
+        return;
+    }
+
+    empty.style.display = 'none';
+
+    const libraryAssets = AppState.referenceAssets.filter((asset) => !asset.isTemporary);
+    const temporaryAssets = AppState.referenceAssets.filter((asset) => asset.isTemporary);
+    grid.innerHTML = [
+        renderReferenceSectionGroup('프로젝트 라이브러리', '반복 배치에 공통으로 쓰는 기준 자산입니다.', libraryAssets),
+        renderReferenceSectionGroup('임시 레퍼런스', '이번 배치에서만 쓰는 보조 참고 이미지입니다.', temporaryAssets)
+    ].join('');
+
+    document.querySelectorAll('.reference-checkbox').forEach((checkbox) => {
+        checkbox.addEventListener('change', (event) => {
+            toggleReferenceAsset(event.target.dataset.relativePath, event.target.checked);
+        });
+    });
+    grid.querySelectorAll('.reference-blueprint-card').forEach((button) => {
+        button.addEventListener('click', () => {
+            if (targetDirInput) targetDirInput.value = button.dataset.path || '';
+        });
+    });
+}
+
+async function uploadReferenceAsset() {
+    const fileInput = Utils.el(CONFIG.DOM.REFERENCE_UPLOAD_INPUT);
+    const targetDirInput = Utils.el(CONFIG.DOM.REFERENCE_TARGET_DIR);
+    const file = fileInput?.files?.[0];
+    const targetDir = targetDirInput?.value?.trim() || AppState.referencePolicy?.temporaryRoot || 'temp';
+
+    if (!file) {
+        showToast('업로드할 레퍼런스 이미지를 선택하세요', 'error');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('project', AppState.currentProject);
+    formData.append('target_dir', targetDir);
+    formData.append('file', file);
+
+    const uploadBtn = Utils.el(CONFIG.DOM.REFERENCE_UPLOAD_BTN);
+    if (uploadBtn) uploadBtn.disabled = true;
+
+    try {
+        const resp = await fetch(CONFIG.API.REFERENCE_ASSET_UPLOAD, {
+            method: 'POST',
+            body: formData
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.detail || data.error) {
+            throw new Error(data.detail || data.error || 'Upload failed');
+        }
+        showToast('레퍼런스 이미지 업로드 완료', 'success');
+        if (fileInput) fileInput.value = '';
+        await loadReferenceAssets();
+    } catch (e) {
+        showToast(`레퍼런스 업로드 실패: ${e.message}`, 'error');
+    } finally {
+        if (uploadBtn) uploadBtn.disabled = false;
+    }
 }
 
 function renderPromptTable(prompts) {
@@ -344,23 +2685,239 @@ function applyPreset() {
 }
 
 // --- Batch Control ---
-function openConfirmModal() {
+function getGenerationMode() {
+    const mode = Utils.val(CONFIG.DOM.GENERATION_MODE);
+    return mode === 'assisted' ? 'assisted' : 'direct';
+}
+
+function updateGenerationModeNote() {
+    const noteEl = Utils.el(CONFIG.DOM.GENERATION_MODE_NOTE);
+    if (!noteEl) return;
+    const providerLabel = getCurrentProviderInfo()?.label || getCurrentProviderId();
+    const operatorMode = getOperatorMode();
+    const operatorLabel = operatorMode === 'codex-conversation' ? 'Codex conversation' : 'Studio operator';
+    updateOperatorModeAvailability();
+
+    if (getGenerationMode() === 'direct') {
+        noteEl.textContent = `Direct keeps the current prompt-first workflow with ${operatorLabel} and sends it to ${providerLabel}.`;
+        return;
+    }
+
+    const activeTemplate = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId);
+    const templateName = activeTemplate?.name || 'no template selected';
+    const referenceCount = AppState.selectedReferenceAssets.length;
+    const sceneDraft = getScenePlannerState();
+    const hasSceneDraft = Object.values(sceneDraft).some(Boolean);
+    noteEl.textContent = `Assisted builds a scene spec from the current prompts, ${referenceCount} references, ${templateName}, and ${hasSceneDraft ? 'scene planner fields' : 'derived defaults'}, then sends it to ${providerLabel} using ${operatorLabel}${operatorMode === 'codex-conversation' ? ' and exposes a handoff payload for chat.' : '.'}`;
+}
+
+function buildSceneActorsFromReferences() {
+    const byCharacter = new Map();
+    AppState.selectedReferenceAssets.forEach((asset) => {
+        if (!asset.character) return;
+        const existing = byCharacter.get(asset.character) || {
+            character: asset.character,
+            emotion: '',
+            role: ''
+        };
+        if (asset.slot === 'emotion' && !existing.emotion) existing.emotion = asset.name;
+        if (asset.slot === 'role' && !existing.role) existing.role = asset.name;
+        byCharacter.set(asset.character, existing);
+    });
+    return Array.from(byCharacter.values());
+}
+
+function buildAssistedSceneSpec(selectedPrompts) {
+    const activeTemplate = AppState.sceneTemplates.find((item) => item.id === AppState.activeSceneTemplateId);
+    const actors = buildSceneActorsFromReferences();
+    const selectedBySlot = getSelectedReferenceAssetsBySlot();
+    const sceneDraft = getScenePlannerState();
+    const promptSeeds = selectedPrompts
+        .map((item) => item.desc_ko || item.prompt || '')
+        .filter(Boolean)
+        .slice(0, 3);
+    const sceneAssets = (selectedBySlot.scene || []).map((asset) => asset.name);
+    const propAssets = (selectedBySlot.prop || []).map((asset) => asset.name);
+    const styleAssets = (selectedBySlot.style || []).map((asset) => asset.name);
+    const visualFraming = activeTemplate?.composition === 'duo'
+        ? 'two-person composition'
+        : activeTemplate?.composition === 'group'
+            ? 'group composition'
+            : 'single-character composition';
+
+    return {
+        project_id: AppState.currentProject,
+        template_id: activeTemplate?.id || null,
+        actors,
+        scene: {
+            situation: sceneDraft.situation || promptSeeds.join(' | '),
+            interaction: sceneDraft.interaction || activeTemplate?.description || '',
+            background: sceneDraft.background || sceneAssets[0] || '',
+            location: sceneDraft.location || ''
+        },
+        props: propAssets,
+        visual: {
+            framing: visualFraming,
+            camera_distance: selectedPrompts.length > 1 ? 'varied framing' : 'medium shot',
+            lighting: sceneDraft.lighting || ''
+        },
+        style: Array.from(new Set([
+            Utils.val('style-preset'),
+            ...styleAssets
+        ].filter(Boolean))),
+        outputs: ['thumb', 'hero'],
+        variation: {
+            promptSeeds,
+            referencePaths: AppState.selectedReferenceAssets.map((asset) => asset.relativePath),
+            templateDescription: activeTemplate?.description || ''
+        }
+    };
+}
+
+function buildGenerationPayload(selectedPrompts) {
+    const generationMode = getGenerationMode();
+    const sceneSpec = generationMode === 'assisted' ? buildAssistedSceneSpec(selectedPrompts) : null;
+    return {
+        project: AppState.currentProject,
+        mode: generationMode,
+        provider_id: getCurrentProviderId(),
+        operator_mode: getOperatorMode(),
+        template_id: AppState.activeSceneTemplateId,
+        scene_spec: sceneSpec,
+        prompts: selectedPrompts,
+        reference_assets: AppState.selectedReferenceAssets,
+        types: ['thumb', 'hero'],
+        style_prompt: document.getElementById('style-prompt').value,
+        negative_prompt: document.getElementById('negative-prompt').value,
+        global_aspect_ratio: document.getElementById('default-ar').value,
+        batch_count: parseInt(document.getElementById('batch-count').value),
+        steps: parseInt(document.getElementById('steps').value)
+    };
+}
+
+function renderPreflightValidation(result) {
+    const panel = Utils.el(CONFIG.DOM.PREFLIGHT_PANEL);
+    const summary = Utils.el(CONFIG.DOM.PREFLIGHT_SUMMARY);
+    const errors = Utils.el(CONFIG.DOM.PREFLIGHT_ERRORS);
+    const warnings = Utils.el(CONFIG.DOM.PREFLIGHT_WARNINGS);
+    if (!panel || !summary || !errors || !warnings) return;
+
+    if (!result) {
+        panel.style.display = 'none';
+        summary.innerHTML = '';
+        errors.innerHTML = '';
+        warnings.innerHTML = '';
+        return;
+    }
+
+    const mode = result.summary?.mode || getGenerationMode();
+    const estimatedImages = result.summary?.estimatedImages || 0;
+    const referenceCount = result.summary?.referenceCount || 0;
+    const providerLabel = result.summary?.providerLabel || getCurrentProviderInfo()?.label || getCurrentProviderId();
+    const operatorMode = result.summary?.operatorMode || getOperatorMode();
+    const operatorLabel = operatorMode === 'codex-conversation' ? 'Codex conversation' : 'Studio operator';
+    const effectiveCapabilities = result.summary?.effectiveCapabilities || {};
+    const capabilityChips = [
+        `Renderer: ${providerLabel}`,
+        `Operator: ${operatorLabel}`,
+        effectiveCapabilities.supportsDirectGeneration ? 'Direct enabled' : 'Direct limited',
+        effectiveCapabilities.supportsAssistedGeneration ? 'Assisted enabled' : 'Assisted limited',
+        effectiveCapabilities.supportsSceneSpec ? 'Scene spec enabled' : 'Scene spec disabled',
+        effectiveCapabilities.supportsReferenceAssets ? 'Reference conditioning enabled' : 'Reference planning only'
+    ];
+    summary.innerHTML = `
+        <strong>${mode}</strong> mode, ${estimatedImages} planned renders, ${referenceCount} selected references
+        <div class="preflight-summary-meta">
+            ${capabilityChips.map((item) => `<span class="preflight-meta-chip">${item}</span>`).join('')}
+        </div>
+    `;
+    errors.innerHTML = (result.errors || [])
+        .map((item) => `<div class="preflight-item">${item}</div>`)
+        .join('');
+    warnings.innerHTML = (result.warnings || [])
+        .map((item) => `<div class="preflight-item">${item}</div>`)
+        .join('');
+    panel.style.display = '';
+}
+
+async function fetchPreflightValidation(payload) {
+    const resp = await fetch(CONFIG.API.VALIDATE_GENERATION, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+        throw new Error(data.detail || 'Preflight validation failed');
+    }
+    AppState.lastPreflight = data;
+    renderPreflightValidation(data);
+    updateCodexHandoffPanel();
+    return data;
+}
+
+async function refreshConfirmPreflight() {
+    const modal = Utils.el(CONFIG.MODALS.CONFIRM);
+    if (!modal || modal.style.display !== 'flex') return null;
+    const selectedIdxs = Array.from(document.querySelectorAll('.prompt-checkbox:checked')).map((cb) => parseInt(cb.dataset.idx, 10));
+    const selectedPrompts = AppState.currentPrompts.filter((_, i) => selectedIdxs.includes(i));
+    if (!selectedPrompts.length) return null;
+    try {
+        return await fetchPreflightValidation(buildGenerationPayload(selectedPrompts));
+    } catch (e) {
+        renderPreflightValidation({
+            summary: {
+                mode: getGenerationMode(),
+                operatorMode: getOperatorMode(),
+                referenceCount: AppState.selectedReferenceAssets.length,
+                providerLabel: getCurrentProviderInfo()?.label || getCurrentProviderId(),
+                effectiveCapabilities: buildEffectiveCapabilities(getCurrentProjectConfig(), getCurrentProviderInfo())
+            },
+            errors: [e.message],
+            warnings: []
+        });
+        updateCodexHandoffPanel(selectedPrompts);
+        return null;
+    }
+}
+
+async function openConfirmModal() {
     const checked = document.querySelectorAll('.prompt-checkbox:checked').length;
     if (checked === 0) return showToast("프롬프트를 1개 이상 선택하세요", "error");
     const repeat = parseInt(document.getElementById('batch-count').value) || 1;
     const total = checked * 2 * repeat;
     const timeEst = Math.ceil(total * 12 / 60);
+    const referenceCount = AppState.selectedReferenceAssets.length;
     const modal = document.getElementById(CONFIG.MODALS.CONFIRM);
     const p = modal.querySelector('p');
-    if (p) p.innerHTML = `<strong>${total}장</strong>의 이미지를 생성합니다<br><span style="font-size:0.9em; opacity:0.8">(${checked}개 프롬프트 x ${repeat} 변형 x 2 크기)</span>`;
+    if (p) p.innerHTML = `<strong>${total}장</strong>의 이미지를 생성합니다<br><span style="font-size:0.9em; opacity:0.8">(${checked}개 프롬프트 x ${repeat} 변형 x 2 크기${referenceCount ? `, 레퍼런스 ${referenceCount}개` : ''})</span>`;
     const sub = modal.querySelector('.sub-text');
     if (sub) sub.innerText = `예상 소요 시간: 약 ${timeEst}분`;
+    updateGenerationModeNote();
+    AppState.lastPreflight = null;
+    renderPreflightValidation(null);
     modal.style.display = 'flex';
+    renderProviderSelector(getCurrentProjectConfig());
+    updateCodexHandoffPanel();
+    await refreshConfirmPreflight();
 }
 
-function closeConfirmModal() { document.getElementById(CONFIG.MODALS.CONFIRM).style.display = 'none'; }
+function closeConfirmModal() {
+    document.getElementById(CONFIG.MODALS.CONFIRM).style.display = 'none';
+    updateCodexHandoffPanel([]);
+}
 
 async function confirmStartBatch() {
+    const selectedIdxs = Array.from(document.querySelectorAll('.prompt-checkbox:checked')).map(cb => parseInt(cb.dataset.idx));
+    if (selectedIdxs.length === 0) return;
+    const selectedPrompts = AppState.currentPrompts.filter((_, i) => selectedIdxs.includes(i));
+    const payload = buildGenerationPayload(selectedPrompts);
+    const preflight = AppState.lastPreflight || await fetchPreflightValidation(payload);
+    if ((preflight.errors || []).length > 0) {
+        showToast(preflight.errors[0], 'error');
+        return;
+    }
+
     closeConfirmModal();
     if (Utils.isChecked(CONFIG.DOM.SETTINGS.AUTOCLEAR)) {
         const gal = Utils.el(CONFIG.DOM.GALLERY); if (gal) gal.innerHTML = '';
@@ -368,24 +2925,21 @@ async function confirmStartBatch() {
         AppState.lastLogCount = 0;
         AppState.lastResultCount = 0;
     }
-    const selectedIdxs = Array.from(document.querySelectorAll('.prompt-checkbox:checked')).map(cb => parseInt(cb.dataset.idx));
-    if (selectedIdxs.length === 0) return;
-    const selectedPrompts = AppState.currentPrompts.filter((_, i) => selectedIdxs.includes(i));
     setBusy(true);
     try {
-        await fetch(CONFIG.API.START_BATCH, {
+        const resp = await fetch(CONFIG.API.START_BATCH, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                prompts: selectedPrompts,
-                types: ["thumb", "hero"],
-                style_prompt: document.getElementById('style-prompt').value,
-                negative_prompt: document.getElementById('negative-prompt').value,
-                global_aspect_ratio: document.getElementById('default-ar').value,
-                batch_count: parseInt(document.getElementById('batch-count').value),
-                steps: parseInt(document.getElementById('steps').value)
-            })
+            body: JSON.stringify(payload)
         });
+        const data = await resp.json();
+        if (!resp.ok || data.detail) {
+            throw new Error(data.detail || 'Failed to start batch');
+        }
+        AppState.currentRunId = data.runId || null;
+        AppState.displayedRunId = data.runId || null;
+        AppState.displayedRunSummary = null;
+        await loadRecentRuns();
         pollStatus();
     } catch (e) {
         showToast("생성 시작 실패: " + e.message, "error");
@@ -409,17 +2963,29 @@ function setBusy(isBusy) {
 
 // --- Status Polling ---
 async function pollStatus() {
+    if (AppState.pollIntervalId) {
+        clearInterval(AppState.pollIntervalId);
+        AppState.pollIntervalId = null;
+    }
     let errorCount = 0;
     const interval = setInterval(async () => {
         try {
-            const resp = await fetch(CONFIG.API.STATUS);
+            const resp = await fetch(buildStatusUrl());
             const data = await resp.json();
+            AppState.currentRunId = (data.is_running && data.run_id) ? data.run_id : null;
             errorCount = 0;
-            updateUI(data);
+            const shouldRenderLive = !AppState.displayedRunId || AppState.displayedRunId === data.run_id;
+            if (shouldRenderLive) {
+                updateUI(data, { syncCurrentRun: true, syncDisplayedRun: true });
+            } else {
+                renderRunComparePanel();
+            }
 
             if (!data.is_running && data.finish_status) {
                 clearInterval(interval);
+                AppState.pollIntervalId = null;
                 setBusy(false);
+                loadRecentRuns();
                 const statusEl = Utils.el(CONFIG.DOM.STATUS_TEXT);
                 if (!statusEl) return;
                 if (data.finish_status === "success") {
@@ -439,16 +3005,35 @@ async function pollStatus() {
             errorCount++;
             if (errorCount >= 30) {
                 clearInterval(interval);
+                AppState.pollIntervalId = null;
                 setBusy(false);
                 showToast("서버 연결이 끊어졌습니다", "error");
             }
         }
     }, 1000);
+    AppState.pollIntervalId = interval;
 }
 
 // --- UI Update ---
-function updateUI(data) {
-    AppState.lastStatusData = data;
+function updateUI(data, options = {}) {
+    const { syncCurrentRun = true, syncDisplayedRun = true } = options;
+    if (syncDisplayedRun && data.run_id && AppState.displayedRunId && AppState.displayedRunId !== data.run_id) {
+        resetRunViewState();
+    }
+    if (syncDisplayedRun) {
+        setDisplayedRun(data);
+    } else {
+        AppState.lastStatusData = data;
+    }
+    AppState.currentRunId = syncCurrentRunIdFromStatus(data, syncCurrentRun);
+    if (syncDisplayedRun && data.mode !== 'assisted') {
+        AppState.retryFocusRunId = null;
+        AppState.retrySuggestion = null;
+        AppState.retryLineage = null;
+        AppState.retrySuggestionRequestKey = '';
+        AppState.retryLineageRequestKey = '';
+    }
+    renderRunComparePanel();
 
     // Welcome → Batch state transition
     const welcomeEl = Utils.el('welcome-state');
@@ -521,6 +3106,7 @@ function updateUI(data) {
                     <img src="${item.url}" alt="${item.name}" loading="lazy">
                     <div class="gallery-overlay">
                         <span class="gallery-name">${item.name}</span>
+                        <span class="mode-badge ${data.mode || 'direct'}">${data.mode || 'direct'}</span>
                         <span class="badge ${item.type}">${item.type}</span>
                         ${item.review_status && item.review_status !== 'pending' ? `<span class="review-badge ${item.review_status}">${item.review_status === 'approved' ? 'Approved' : 'Rejected'}</span>` : ''}
                     </div>`;
@@ -528,6 +3114,7 @@ function updateUI(data) {
                 div.innerHTML = `
                     <div class="gallery-placeholder ${item.status}">
                         <span>${item.status === 'timeout' ? 'Timed Out' : 'Failed'}</span>
+                        <span class="mode-badge ${data.mode || 'direct'}">${data.mode || 'direct'}</span>
                         <span class="gallery-name">${item.name} (${item.type})</span>
                     </div>`;
             }
@@ -545,6 +3132,13 @@ function updateUI(data) {
             if (previewEl) previewEl.innerHTML = `<img src="${lastSuccess.url}" class="fade-in">`;
         }
     }
+}
+
+function syncCurrentRunIdFromStatus(data, syncCurrentRun = true) {
+    if (!syncCurrentRun) return AppState.currentRunId;
+    if (data.run_id && data.is_running) return data.run_id;
+    if (!data.is_running) return null;
+    return AppState.currentRunId;
 }
 
 // --- Gallery Filters ---
@@ -570,6 +3164,7 @@ function openImageDetail(index) {
     if (!data || index < 0 || index >= data.results.length) return;
     currentDetailIndex = index;
     const item = data.results[index];
+    const runMode = data.mode || 'direct';
     const modal = Utils.el('image-detail-modal');
     if (!modal) return;
 
@@ -585,13 +3180,17 @@ function openImageDetail(index) {
     const meta = Utils.el('detail-meta');
     meta.innerHTML = `
         <div><strong>Status:</strong> <span class="badge ${item.status}">${item.status}</span></div>
+        <div><strong>Mode:</strong> <span class="mode-badge ${runMode}">${runMode}</span></div>
         <div><strong>Type:</strong> ${item.type} (${item.width}x${item.height})</div>
         <div><strong>Duration:</strong> ${item.duration ? item.duration.toFixed(1) + 's' : 'N/A'}</div>
         <div><strong>Review:</strong> <span class="review-badge ${item.review_status || 'pending'}">${item.review_status || 'pending'}</span></div>
+        <div><strong>References:</strong> ${(item._reference_assets || []).length} selected</div>
     `;
 
     Utils.el('detail-prompt-text').textContent = item.positive || item.prompt || '';
     Utils.el('detail-negative-text').textContent = item.negative || '';
+    const noteInput = Utils.el('detail-review-note');
+    if (noteInput) noteInput.value = item.review_note || '';
 
     // Navigation info
     Utils.el('detail-nav-info').textContent = `${index + 1} / ${data.results.length}`;
@@ -617,12 +3216,22 @@ function navigateDetail(direction) {
 async function reviewCurrentImage(status) {
     if (currentDetailIndex < 0) return;
     try {
-        await fetch(`${CONFIG.API.REVIEW}/${currentDetailIndex}/review`, {
+        const note = Utils.el('detail-review-note')?.value?.trim() || '';
+        const resp = await fetch(`${CONFIG.API.REVIEW}/${currentDetailIndex}/review?project=${encodeURIComponent(AppState.currentProject)}&run_id=${encodeURIComponent(getReviewTargetRunId() || '')}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status })
+            body: JSON.stringify({ status, note })
         });
+        const body = await resp.json();
+        if (!resp.ok || body.detail) {
+            throw new Error(body.detail || 'Review update failed');
+        }
         showToast(status === 'approved' ? '승인됨' : '거부됨', status === 'approved' ? 'success' : 'error');
+        const data = getStatusData();
+        if (data?.results?.[currentDetailIndex]) {
+            data.results[currentDetailIndex].review_status = status;
+            data.results[currentDetailIndex].review_note = note;
+        }
         // Update local display
         const badge = document.querySelector(`#image-detail-modal .review-badge`);
         if (badge) {
@@ -639,7 +3248,37 @@ async function reviewCurrentImage(status) {
                     `<span class="review-badge ${status}">${status === 'approved' ? 'Approved' : 'Rejected'}</span>`);
             }
         }
-    } catch (e) { console.error('Review failed:', e); }
+        await loadRecentRuns();
+    } catch (e) {
+        console.error('Review failed:', e);
+        showToast(`검수 저장 실패: ${e.message}`, 'error');
+    }
+}
+
+async function saveCurrentReviewNote() {
+    if (currentDetailIndex < 0) return;
+    const data = getStatusData();
+    const currentStatus = data?.results?.[currentDetailIndex]?.review_status || 'pending';
+    const note = Utils.el('detail-review-note')?.value?.trim() || '';
+    try {
+        const resp = await fetch(`${CONFIG.API.REVIEW}/${currentDetailIndex}/review?project=${encodeURIComponent(AppState.currentProject)}&run_id=${encodeURIComponent(getReviewTargetRunId() || '')}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: currentStatus, note })
+        });
+        const body = await resp.json();
+        if (!resp.ok || body.detail) {
+            throw new Error(body.detail || 'Review note save failed');
+        }
+        if (data?.results?.[currentDetailIndex]) {
+            data.results[currentDetailIndex].review_note = note;
+        }
+        showToast('메모 저장됨', 'success');
+        await loadRecentRuns();
+    } catch (e) {
+        console.error('Review note save failed:', e);
+        showToast(`메모 저장 실패: ${e.message}`, 'error');
+    }
 }
 
 function getStatusData() { return AppState.lastStatusData; }

@@ -1,7 +1,9 @@
 {
-  "name": "케미테스트",
+  "name": "MBTI",
   "sourceDir": "D:/Projects/MBTI",
   "promptsFile": "D:/Projects/MBTI/scripts/image-gen/output/prompts.json",
+  "referenceAssetsDir": "D:/Projects/MBTI/scripts/image-gen/reference-assets",
+  "workflowMode": "reference-first",
   "crops": {
     "tournament": { "width": 512, "height": 640, "ratio": "4:5" },
     "thumbnail": { "width": 256, "height": 256, "ratio": "1:1" },
@@ -11,5 +13,24 @@
   "generation": {
     "aspectRatio": "1:1",
     "style": "semi-realistic illustration, warm pastel tones, no text, no letters, clean background"
+  },
+  "supportedProviders": ["comfyui", "api-image"],
+  "referencePolicy": {
+    "requiredSlots": ["identity"],
+    "recommendedSlots": ["emotion", "role", "scene", "style"],
+    "singleSelectSlots": ["identity", "emotion", "role", "scene"],
+    "temporaryRoot": "temp",
+    "libraryPresets": [
+      { "label": "하루 베이스", "path": "characters/haru/base" },
+      { "label": "하루 감정", "path": "characters/haru/emotions" },
+      { "label": "하루 역할", "path": "characters/haru/roles" },
+      { "label": "하루 소품", "path": "characters/haru/props" },
+      { "label": "하루 장면", "path": "characters/haru/scenes" },
+      { "label": "스타일 앵커", "path": "style-anchors/mobile-ui" },
+      { "label": "임시 레퍼런스", "path": "temp/scenes" }
+    ]
+  },
+  "capabilities": {
+    "supportsReferenceAssets": false
   }
 }

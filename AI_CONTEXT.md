@@ -1,26 +1,53 @@
+# AI Agent Context
 
-# 🕵️‍♂️ AI Agent Context - ComfyUI Workflow Issue
-This is a summary of the current issue for the next AI Agent.
+This file stores durable notes for future agent sessions.
 
-## 📌 Issue Summary
-The `z-image-turbo.safetensors` model is failing to load with the standard `CheckpointLoaderSimple` node in ComfyUI.
-The error is: `RuntimeError: ERROR: clip input is invalid: None`.
+## Current Technical Context
 
-## 🔍 Investigation Findings
-- **Model Source:** `Comfy-Org/z_image_turbo` (Hugging Face)
-- **File:** `split_files/diffusion_models/z_image_turbo_bf16.safetensors` (12.3GB)
-- **Analysis:** This appears to be a **Diffusion Only** model (UNet/Transformer only), meaning it **does not contain the CLIP (Text Encoder) or VAE**.
-- **Current Workflow:** Uses `CheckpointLoaderSimple` which expects a full checkpoint (Model + CLIP + VAE).
+The current ComfyUI workflow uses separate loaders:
 
-## ✅ Solution Plan (For Next AI)
-You need to refactor the `workflow_api.json` to load components separately:
-1.  **Load Diffusion Model:** Use `UNETLoader` (or similar) to load `z-image-turbo.safetensors`.
-2.  **Load Text Encoder (LLM):** Use `DualCLIPLoader` or specialized LLM loaders to load `qwen_3_4b` (Recommended).
-    - *Note:* Qwen 4B is chosen over 8B to keep total VRAM usage under ~22GB, preventing performance degradation on consumer GPUs (like RTX 5080).
-    - *Reasoning:* 8B requires ~30GB VRAM in bf16, which exceeds hardware limits and causes slow system memory swapping.
-3.  **Load VAE:** Use `VAELoader` to load a standard VAE (e.g., `ae.safetensors`).
-4.  **Connect:** Link these separate outputs to the `KSampler` and `CLIPTextEncode`.
+- `UNETLoader`
+- `CLIPLoader`
+- `VAELoader`
 
-## ⚠️ Action Required
-- Download the necessary **CLIP** and **VAE** models to `models/clip` and `models/vae`.
-- Update `workflow_api.json` to use the multi-loader approach.
+This replaced the older `CheckpointLoaderSimple` assumption because the selected model is diffusion-only and does not include CLIP or VAE in a single checkpoint.
+
+## Current Product Direction
+
+`AI_Generator` is being positioned as a reusable multi-project image generation studio rather than a single-project tool.
+
+The product direction now includes:
+
+- multi-project support
+- project-specific assets and policies
+- direct generation mode
+- LLM-assisted generation mode
+- template-centered workflows
+- provider abstraction across ComfyUI, API providers, and local helper models
+
+See `docs/platform-product-plan.md` for the current product plan.
+
+## Codex Encoding Safety Note
+
+This repository is edited in an environment that often runs on Windows PowerShell 5.1 with legacy console code pages.
+
+Observed risks:
+
+- Korean text can appear as mojibake in shell output.
+- Non-ASCII content can be corrupted during write or display steps.
+- Console output problems do not always mean file corruption, but file corruption can also happen.
+
+Rules for future Codex sessions:
+
+1. Prefer ASCII-only edits for agent-authored docs and planning files.
+2. Do not rely on shell output to verify non-ASCII text correctness.
+3. When checking text integrity, verify using Python file reads instead of console display.
+4. Avoid large direct edits to Korean copy unless the environment is known-safe for UTF-8.
+5. Keep durable planning docs in ASCII if Codex is expected to edit them again.
+
+## Immediate Open Themes
+
+- introduce provider adapters
+- replace global batch state with persistent run storage
+- upgrade templates into a structured domain model
+- add direct vs assisted generation as explicit product modes
