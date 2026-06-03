@@ -263,6 +263,8 @@ class RunWorkflowTests(unittest.TestCase):
                     "status": "ok",
                     "contract": "ai-generator-upscale-v1",
                     "backend": "pillow-stub",
+                    "modelAvailable": False,
+                    "capabilities": {"batchUpload": True},
                 }
 
         class FakeSession:
@@ -280,6 +282,9 @@ class RunWorkflowTests(unittest.TestCase):
              mock.patch("app.aiohttp.ClientSession", FakeSession):
             payload = asyncio.run(app.get_upscale_health("mbti"))
         self.assertTrue(payload["pid-http"]["available"])
+        self.assertEqual(payload["pid-http"]["backend"], "pillow-stub")
+        self.assertFalse(payload["pid-http"]["modelAvailable"])
+        self.assertTrue(payload["pid-http"]["capabilities"]["batchUpload"])
         self.assertEqual(calls[0][0], "http://127.0.0.1:9876/upscale")
         self.assertTrue(calls[0][1]["probe"])
         self.assertEqual(calls[0][1]["contract"], "ai-generator-upscale-v1")
@@ -437,6 +442,162 @@ class RunWorkflowTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
             outside.unlink(missing_ok=True)
+
+    def test_pid_http_runner_standalone_upload_saves_to_output_dir(self):
+        from io import BytesIO
+        from PIL import Image
+        from scripts import pid_http_runner_stub
+
+        root = Path(app.OUTPUT_DIR) / self.project / "runner-standalone"
+        output_dir = root / "saved-results"
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+
+        buf = BytesIO()
+        Image.new("RGB", (7, 5), (80, 120, 160)).save(buf, format="PNG")
+
+        try:
+            runner_client = TestClient(pid_http_runner_stub.app)
+            with mock.patch.dict(os.environ, {
+                "UPSCALE_ALLOWED_ROOT": str(root),
+                "UPSCALE_STANDALONE_OUTPUT_DIR": str(output_dir),
+            }):
+                home = runner_client.get("/")
+                self.assertEqual(home.status_code, 200)
+                self.assertIn("Local Upscale Runner", home.text)
+                self.assertIn("multiple", home.text)
+                self.assertIn("Pillow/LANCZOS", home.text)
+
+                response = runner_client.post(
+                    "/standalone/upscale",
+                    data={"scale": "2", "outputName": "separate-save"},
+                    files={"file": ("source.png", buf.getvalue(), "image/png")},
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertEqual(payload["mode"], "standalone")
+                self.assertEqual(payload["count"], 1)
+                self.assertEqual(payload["succeeded"], 1)
+                self.assertEqual(len(payload["results"]), 1)
+                self.assertEqual(payload["width"], 14)
+                self.assertEqual(payload["height"], 10)
+                self.assertFalse(payload["inputKept"])
+                self.assertNotIn("inputPath", payload)
+                self.assertTrue(Path(payload["outputPath"]).exists())
+                self.assertTrue(str(Path(payload["outputPath"]).resolve()).startswith(str(output_dir.resolve())))
+                self.assertFalse((root / "standalone-inputs").exists())
+
+                downloaded = runner_client.get(payload["downloadUrl"])
+                self.assertEqual(downloaded.status_code, 200)
+                self.assertEqual(downloaded.headers["content-type"], "image/webp")
+
+                keep_input = runner_client.post(
+                    "/standalone/upscale",
+                    data={"scale": "2", "outputName": "keep-input", "keepInput": "true"},
+                    files={"file": ("source.png", buf.getvalue(), "image/png")},
+                )
+                self.assertEqual(keep_input.status_code, 200)
+                keep_payload = keep_input.json()
+                self.assertTrue(keep_payload["inputKept"])
+                self.assertTrue(Path(keep_payload["inputPath"]).exists())
+
+                second_buf = BytesIO()
+                Image.new("RGB", (3, 4), (20, 40, 60)).save(second_buf, format="PNG")
+                batch_response = runner_client.post(
+                    "/standalone/upscale",
+                    data={"scale": "4", "outputName": "batch-save"},
+                    files=[
+                        ("file", ("first.png", buf.getvalue(), "image/png")),
+                        ("file", ("second.png", second_buf.getvalue(), "image/png")),
+                    ],
+                    headers={"Accept": "application/json"},
+                )
+                self.assertEqual(batch_response.status_code, 200)
+                batch_payload = batch_response.json()
+                self.assertEqual(batch_payload["status"], "success")
+                self.assertEqual(batch_payload["count"], 2)
+                self.assertEqual(batch_payload["succeeded"], 2)
+                self.assertEqual(len(batch_payload["results"]), 2)
+                self.assertEqual(batch_payload["results"][0]["width"], 28)
+                self.assertEqual(batch_payload["results"][1]["width"], 12)
+                for item in batch_payload["results"]:
+                    self.assertTrue(Path(item["outputPath"]).exists())
+
+                html_response = runner_client.post(
+                    "/standalone/upscale",
+                    data={"scale": "2", "outputName": "html-save"},
+                    files=[
+                        ("file", ("first.png", buf.getvalue(), "image/png")),
+                        ("file", ("second.png", second_buf.getvalue(), "image/png")),
+                    ],
+                    headers={"Accept": "text/html"},
+                )
+                self.assertEqual(html_response.status_code, 200)
+                self.assertIn("text/html", html_response.headers["content-type"])
+                self.assertIn("Upscale Results", html_response.text)
+                self.assertIn("Download result", html_response.text)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_pid_http_runner_standalone_rejects_invalid_inputs(self):
+        from io import BytesIO
+        from PIL import Image
+        from scripts import pid_http_runner_stub
+
+        root = Path(app.OUTPUT_DIR) / self.project / "runner-standalone-invalid"
+        output_dir = root / "saved-results"
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+
+        try:
+            runner_client = TestClient(pid_http_runner_stub.app)
+            with mock.patch.dict(os.environ, {
+                "UPSCALE_ALLOWED_ROOT": str(root),
+                "UPSCALE_STANDALONE_OUTPUT_DIR": str(output_dir),
+            }):
+                wrong_ext = runner_client.post(
+                    "/standalone/upscale",
+                    data={"scale": "2"},
+                    files={"file": ("source.txt", b"not image", "text/plain")},
+                )
+                self.assertEqual(wrong_ext.status_code, 400)
+
+                corrupt = runner_client.post(
+                    "/standalone/upscale",
+                    data={"scale": "2"},
+                    files={"file": ("source.png", b"not image", "image/png")},
+                )
+                self.assertEqual(corrupt.status_code, 400)
+                self.assertIn("not a readable image", corrupt.json()["detail"])
+                self.assertFalse((root / "standalone-inputs").exists())
+
+                buf = BytesIO()
+                Image.new("RGB", (4, 4), (10, 20, 30)).save(buf, format="PNG")
+                with mock.patch.dict(os.environ, {"UPSCALE_STANDALONE_MAX_PIXELS": "9"}):
+                    too_many_pixels = runner_client.post(
+                        "/standalone/upscale",
+                        data={"scale": "2"},
+                        files={"file": ("source.png", buf.getvalue(), "image/png")},
+                    )
+                self.assertEqual(too_many_pixels.status_code, 400)
+                self.assertIn("too many pixels", too_many_pixels.json()["detail"])
+
+                (output_dir / "manual.txt").parent.mkdir(parents=True, exist_ok=True)
+                (output_dir / "manual.txt").write_text("manual", encoding="utf-8")
+                non_runner_file = runner_client.get("/standalone/files/manual.txt")
+                self.assertEqual(non_runner_file.status_code, 400)
+
+                missing = runner_client.get("/standalone/files/missing_x2_20260603-010203-abcdef.webp")
+                self.assertEqual(missing.status_code, 404)
+
+            with mock.patch.dict(os.environ, {
+                "UPSCALE_ALLOWED_ROOT": str(root),
+                "UPSCALE_STANDALONE_OUTPUT_DIR": str(Path(app.OUTPUT_DIR) / self.project / "outside-standalone"),
+            }):
+                outside_home = runner_client.get("/")
+                self.assertEqual(outside_home.status_code, 400)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_external_upscale_image_bytes_are_written_as_webp(self):
         from io import BytesIO

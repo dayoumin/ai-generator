@@ -906,6 +906,53 @@ textarea {
     width: 100%;
 }
 
+.upscale-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.5);
+}
+
+.upscale-tab {
+    min-height: 38px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 800;
+}
+
+.upscale-tab.active {
+    background: rgba(99, 102, 241, 0.24);
+    color: var(--text-main);
+    box-shadow: inset 0 0 0 1px rgba(199, 210, 254, 0.22);
+}
+
+.upscale-mode-summary {
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    display: grid;
+    gap: 3px;
+}
+
+.upscale-mode-summary strong {
+    color: var(--text-main);
+    font-size: 0.88rem;
+}
+
+.upscale-mode-summary span {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+
 .upscale-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

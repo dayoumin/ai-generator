@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Generator Studio</title>
-    <link rel="stylesheet" href="/static/style.css?v=backend-split-1">
+    <link rel="stylesheet" href="/static/style.css?v=upscale-tabs-1">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
         rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/lucide@0.344.0/dist/umd/lucide.min.js"></script>
@@ -1079,13 +1079,25 @@
                 <button class="close-btn" id="close-upscale-btn">&times;</button>
             </header>
             <div class="upscale-form">
-                <label>
+                <div class="upscale-tabs" role="tablist" aria-label="업스케일 대상">
+                    <button type="button" class="upscale-tab active" data-upscale-tab="upload" aria-selected="true">
+                        PC 이미지
+                    </button>
+                    <button type="button" class="upscale-tab" data-upscale-tab="run-crops" aria-selected="false">
+                        현재 Run
+                    </button>
+                </div>
+                <div class="upscale-mode-summary">
+                    <strong id="upscale-mode-title">PC 이미지 업스케일</strong>
+                    <span id="upscale-mode-desc">파일을 고르면 현재 생성 run과 상관없이 업스케일 작업을 시작합니다.</span>
+                </div>
+                <label id="upscale-target-field">
                     <span>대상</span>
                     <select id="upscale-target" class="file-selector">
                         <option value="run-crops">현재 run의 crop 결과</option>
                         <option value="run-source">현재 run의 원본 이미지</option>
                         <option value="run-all">현재 run의 원본 + crop 결과</option>
-                        <option value="upload">PC에서 이미지 선택</option>
+                        <option value="upload" hidden>PC에서 이미지 선택</option>
                     </select>
                 </label>
                 <div class="upscale-grid">
@@ -1099,8 +1111,8 @@
                     <label>
                         <span>엔진</span>
                         <select id="upscale-engine" class="file-selector">
-                            <option value="pillow">로컬 기본</option>
-                            <option value="pid-http">PiD HTTP</option>
+                            <option value="pillow">기본 리사이즈(LANCZOS)</option>
+                            <option value="pid-http">PiD HTTP runner</option>
                         </select>
                     </label>
                 </div>
@@ -1258,8 +1270,8 @@ Cute Cat,Cute cat sitting on a rug,1:1</pre>
         </div>
     </div>
 
-    <script src="/static/js/constants.js?v=backend-split-1"></script>
-    <script src="/static/js/app.js?v=backend-split-1"></script>
+    <script src="/static/js/constants.js?v=upscale-tabs-1"></script>
+    <script src="/static/js/app.js?v=upscale-tabs-1"></script>
 </body>
 
 </html>

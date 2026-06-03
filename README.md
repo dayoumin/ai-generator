@@ -4,7 +4,16 @@
 
 AI_Generator keeps PiD-style upscaling as a local-only extension. The app does not bundle or download NVIDIA PiD weights, and `pid` / `pid-http` outputs are blocked from R2 upload by default unless the project explicitly enables restricted uploads.
 
-Use the contract stub to verify the web-server path before installing a real model backend:
+Standalone use does not require the AI_Generator app server. Start only the runner, open the runner URL, upload one or more PC images, and it will save the results under the standalone output folder:
+
+```powershell
+python scripts/pid_http_runner_stub.py --host 127.0.0.1 --port 8765 --allowed-root D:\UpscaleWork --output-dir D:\UpscaleWork\results
+```
+
+Then open `http://127.0.0.1:8765/`. The browser form supports multi-file selection and returns a result page with download links. This path does not create an AI_Generator run, manifest, review record, or R2 mapping.
+By default only the upscaled result is kept. If you also want to keep the uploaded source file, check the form option or send `keepInput=true`; retained inputs are saved under `standalone-inputs`.
+
+To connect the same runner as an AI_Generator upscale backend, start the app separately and point `LOCAL_UPSCALE_ENDPOINT` at the contract endpoint:
 
 ```powershell
 python scripts/pid_http_runner_stub.py --host 127.0.0.1 --port 8765 --allowed-root outputs

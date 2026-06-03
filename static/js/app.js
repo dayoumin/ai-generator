@@ -150,6 +150,9 @@ function initEventListeners() {
     });
     Utils.el('close-upscale-btn')?.addEventListener('click', closeUpscaleModal);
     Utils.el('cancel-upscale-btn')?.addEventListener('click', handleUpscaleCancel);
+    document.querySelectorAll('[data-upscale-tab]').forEach((button) => {
+        button.addEventListener('click', () => setUpscaleTarget(button.dataset.upscaleTab || 'upload'));
+    });
     Utils.el('upscale-target')?.addEventListener('change', updateUpscaleModalState);
     Utils.el('upscale-engine')?.addEventListener('change', updateUpscaleModalState);
     Utils.el('run-upscale-btn')?.addEventListener('click', runUpscaleFromModal);
@@ -748,6 +751,10 @@ function getUpscaleBackendStatusSummary() {
     const pillow = AppState.upscaleStatuses?.pillow || {};
     const pid = AppState.upscaleStatuses?.['pid-http'] || {};
     const pillowReady = pillow.available !== false;
+    const pidBackend = pid.backend || 'PiD runner';
+    const pidModel = pid.modelAvailable === false
+        ? `${pidBackend} / AI 모델 없음`
+        : (pid.modelName || pidBackend);
     if (AppState.providerHealthFetchError) {
         return {
             tone: pillowReady ? 'amber' : 'red',
@@ -760,8 +767,8 @@ function getUpscaleBackendStatusSummary() {
         return {
             tone: 'green',
             label: '업스케일 백엔드 준비됨',
-            detail: `Local Pillow + PiD runner 분리 운영 중${pid.endpoint ? ` (${pid.endpoint})` : ''}`,
-            chip: '업스케일 백엔드: Local Pillow + PiD Runner'
+            detail: `Local Pillow + PiD HTTP 계약 연결 중 (${pidModel})${pid.endpoint ? ` · ${pid.endpoint}` : ''}`,
+            chip: `업스케일 백엔드: Local Pillow + ${pidBackend}`
         };
     }
     if (pid.configured && pid.available === false) {
@@ -1003,7 +1010,11 @@ async function uploadToR2() {
 function openUpscaleModal() {
     const modal = Utils.el('upscale-modal');
     if (!modal) return;
-    updateUpscaleModalState();
+    if (!AppState.activeUpscaleJobId) {
+        setUpscaleTarget('upload');
+    } else {
+        updateUpscaleModalState();
+    }
     modal.style.display = 'flex';
 }
 
@@ -1025,17 +1036,54 @@ function resetUpscaleJobUI() {
     if (title) title.textContent = '업스케일 준비 중';
 }
 
+function isRunUpscaleTarget(target) {
+    return ['run-crops', 'run-source', 'run-all'].includes(target);
+}
+
+function setUpscaleTarget(target = 'upload') {
+    const select = Utils.el('upscale-target');
+    if (select) {
+        if (target === 'upload') {
+            select.value = 'upload';
+        } else if (!isRunUpscaleTarget(select.value)) {
+            select.value = isRunUpscaleTarget(target) ? target : 'run-crops';
+        }
+    }
+    updateUpscaleModalState();
+}
+
+function syncUpscaleModeTabs(target) {
+    const isUpload = target === 'upload';
+    document.querySelectorAll('[data-upscale-tab]').forEach((button) => {
+        const buttonIsUpload = button.dataset.upscaleTab === 'upload';
+        const active = isUpload ? buttonIsUpload : !buttonIsUpload;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+}
+
 function updateUpscaleModalState() {
     const target = Utils.el('upscale-target')?.value || 'run-crops';
     const engine = Utils.el('upscale-engine')?.value || 'pillow';
+    const targetField = Utils.el('upscale-target-field');
     const cropField = Utils.el('upscale-crops-field');
     const fileField = Utils.el('upscale-file-field');
+    const modeTitle = Utils.el('upscale-mode-title');
+    const modeDesc = Utils.el('upscale-mode-desc');
     const note = Utils.el('upscale-note');
     const isUpload = target === 'upload';
     const usesCrops = target === 'run-crops' || target === 'run-all';
 
+    syncUpscaleModeTabs(target);
+    if (targetField) targetField.style.display = isUpload ? 'none' : '';
     if (cropField) cropField.style.display = usesCrops ? '' : 'none';
     if (fileField) fileField.style.display = isUpload ? '' : 'none';
+    if (modeTitle) modeTitle.textContent = isUpload ? 'PC 이미지 업스케일' : '현재 Run 업스케일';
+    if (modeDesc) {
+        modeDesc.textContent = isUpload
+            ? '파일을 고르면 현재 생성 run이 없어도 바로 업스케일합니다. 앱 안에서는 확인용 업로드 run으로 저장됩니다.'
+            : '갤러리에서 불러온 생성 결과의 원본, crop, 전체 변형을 업스케일합니다.';
+    }
     if (!note) return;
 
     const notes = {
@@ -1051,6 +1099,10 @@ function updateUpscaleModalState() {
             engineNote = ' PiD HTTP는 LOCAL_UPSCALE_ENDPOINT 또는 프로젝트 upscale.endpoint 설정이 필요합니다.';
         } else if (!engineStatus?.available) {
             engineNote = ` PiD runner 계약 확인 실패${engineStatus.reason ? ` (${engineStatus.reason})` : ''}.`;
+        } else if (engineStatus.modelAvailable === false) {
+            engineNote = ` PiD HTTP 계약은 연결됐지만 현재 runner는 ${engineStatus.backend || 'pillow-stub'}이며 실제 PiD 모델은 포함되어 있지 않습니다.`;
+        } else if (engineStatus.modelName) {
+            engineNote = ` PiD HTTP runner가 ${engineStatus.modelName} 모델로 응답 중입니다. 제한 라이선스 결과는 R2 업로드가 기본 차단됩니다.`;
         } else {
             engineNote = ' PiD HTTP runner가 로컬 POST 계약에 응답 중입니다. 제한 라이선스 결과는 R2 업로드가 기본 차단됩니다.';
         }

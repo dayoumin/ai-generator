@@ -3719,6 +3719,7 @@ async def get_upscale_health(project: str = "mbti") -> Dict[str, Any]:
     endpoint = str(pid_config.get("endpoint") or "").strip()
     pid_available = False
     pid_reason = ""
+    pid_probe: Dict[str, Any] = {}
     if not endpoint:
         pid_reason = "LOCAL_UPSCALE_ENDPOINT or project upscale.endpoint is not configured"
     elif not is_local_http_endpoint(endpoint):
@@ -3741,6 +3742,8 @@ async def get_upscale_health(project: str = "mbti") -> Dict[str, Any]:
                             probe_data = await resp.json(content_type=None)
                         except Exception:
                             probe_data = {}
+                        pid_probe = probe_data if isinstance(probe_data, dict) else {}
+                        probe_data = pid_probe
                         contract_ok = probe_data.get("contract") == "ai-generator-upscale-v1"
                         status_ok = str(probe_data.get("status") or "ok").lower() in {"ok", "ready", "success"}
                         pid_available = bool(contract_ok and status_ok)
@@ -3748,6 +3751,8 @@ async def get_upscale_health(project: str = "mbti") -> Dict[str, Any]:
                             pid_reason = f"POST probe HTTP {resp.status}: contract mismatch"
                         elif not status_ok:
                             pid_reason = f"POST probe HTTP {resp.status}: runner not ready"
+                        elif probe_data.get("reason"):
+                            pid_reason = str(probe_data.get("reason"))
         except Exception as exc:
             pid_reason = str(exc)
     return {
@@ -3759,6 +3764,10 @@ async def get_upscale_health(project: str = "mbti") -> Dict[str, Any]:
             "endpoint": endpoint,
             "status": "ok" if pid_available else "unavailable",
             "reason": pid_reason,
+            "backend": pid_probe.get("backend") or "",
+            "modelAvailable": pid_probe.get("modelAvailable") if "modelAvailable" in pid_probe else None,
+            "modelName": pid_probe.get("modelName") or pid_probe.get("model") or "",
+            "capabilities": pid_probe.get("capabilities") or {},
             "restrictedUpload": True,
         },
     }
