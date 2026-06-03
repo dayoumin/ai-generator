@@ -4,6 +4,7 @@ const AppState = {
     availableProjects: [],
     availableProviders: [],
     providerStatuses: {},
+    upscaleStatuses: {},
     providerHealthFetchError: false,
     currentProviderId: null,
     currentOperatorMode: 'studio',
@@ -33,7 +34,9 @@ const AppState = {
     referenceDefinitions: [],
     lastLogCount: 0,
     lastResultCount: 0,
-    lastStatusData: null
+    lastStatusData: null,
+    activeUpscaleJobId: null,
+    upscaleJobPollId: null
 };
 
 const STUDIO_STATE_KEY = 'ai_generator_studio_state';
@@ -64,6 +67,7 @@ function initEventListeners() {
     Utils.el(CONFIG.DOM.START_BTN)?.addEventListener('click', openConfirmModal);
     Utils.el(CONFIG.DOM.FAB_BTN)?.addEventListener('click', openConfirmModal);
     Utils.el('r2-upload-btn')?.addEventListener('click', uploadToR2);
+    Utils.el('upscale-btn')?.addEventListener('click', openUpscaleModal);
     Utils.el('cancel-batch-btn')?.addEventListener('click', cancelBatch);
     Utils.el('welcome-go-prompts')?.addEventListener('click', () => {
         setActiveTab('compose');
@@ -71,6 +75,7 @@ function initEventListeners() {
     Utils.el('welcome-go-references')?.addEventListener('click', () => {
         setActiveTab('compose');
     });
+    Utils.el('toggle-execution-config')?.addEventListener('click', toggleExecutionConfig);
     Utils.el('toggle-style-config')?.addEventListener('click', toggleStyleConfig);
     Utils.el('clear-logs-btn')?.addEventListener('click', () => {
         Utils.el(CONFIG.DOM.LOGS).innerHTML = '';
@@ -115,6 +120,8 @@ function initEventListeners() {
         updateOperatorModeAvailability();
         updateGenerationModeNote();
         updateCodexHandoffPanel();
+        toggleContextualUI();
+        toggleContextualUI();
         AppState.lastPreflight = null;
         await refreshConfirmPreflight();
     });
@@ -141,10 +148,20 @@ function initEventListeners() {
         const textarea = Utils.el('mapping-json');
         if (textarea) { navigator.clipboard.writeText(textarea.value); showToast('클립보드에 복사되었습니다', 'success'); }
     });
+    Utils.el('close-upscale-btn')?.addEventListener('click', closeUpscaleModal);
+    Utils.el('cancel-upscale-btn')?.addEventListener('click', handleUpscaleCancel);
+    Utils.el('upscale-target')?.addEventListener('change', updateUpscaleModalState);
+    Utils.el('upscale-engine')?.addEventListener('change', updateUpscaleModalState);
+    Utils.el('run-upscale-btn')?.addEventListener('click', runUpscaleFromModal);
+    Utils.el('preview-upscale-cleanup-btn')?.addEventListener('click', () => runUpscaleCleanup(true));
+    Utils.el('run-upscale-cleanup-btn')?.addEventListener('click', () => runUpscaleCleanup(false));
     Utils.el('close-detail-btn')?.addEventListener('click', closeImageDetail);
     Utils.el('btn-approve')?.addEventListener('click', () => reviewCurrentImage('approved'));
     Utils.el('btn-reject')?.addEventListener('click', () => reviewCurrentImage('rejected'));
+    Utils.el('btn-revision')?.addEventListener('click', () => reviewCurrentImage('revision_requested'));
     Utils.el('btn-save-note')?.addEventListener('click', saveCurrentReviewNote);
+    Utils.el('detail-upscale-versions')?.addEventListener('click', handleUpscaleVersionClick);
+    Utils.el('codex-import-btn')?.addEventListener('click', importCodexImage);
 
     // Inputs & Selects
     Utils.el('style-preset')?.addEventListener('change', applyPreset);
@@ -161,6 +178,19 @@ function initEventListeners() {
     const settings = Object.values(CONFIG.DOM.SETTINGS);
     settings.forEach(id => Utils.el(id)?.addEventListener('change', saveAppConfig));
 
+    // ── Compose 서브탭 ──────────────────────────────
+    document.querySelectorAll('.compose-subtab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const targetId = btn.dataset.subtab;
+            document.querySelectorAll('.compose-subtab')
+                .forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            document.querySelectorAll('.compose-subtab-panel')
+                .forEach(p => p.classList.remove('active'));
+            document.getElementById(`subtab-${targetId}`)?.classList.add('active');
+        });
+    });
+
     // Keyboard shortcuts for image detail modal
     document.addEventListener('keydown', (e) => {
         const modal = Utils.el('image-detail-modal');
@@ -171,6 +201,15 @@ function initEventListeners() {
         if (e.key === 'ArrowRight') navigateDetail(1);
         if (e.key === 'ArrowLeft') navigateDetail(-1);
     });
+}
+
+// --- UI Context Toggle ---
+function toggleContextualUI() {
+    const mode = document.getElementById('generation-mode')?.value;
+    const planner = document.getElementById('scene-planner-container');
+    if (planner) {
+        planner.style.display = (mode === 'assisted') ? 'block' : 'none';
+    }
 }
 
 // --- Tab Management ---
@@ -287,7 +326,7 @@ function selectProjectProvider(project, options = {}) {
     });
     const nextProvider = (
         (keepCurrent && current && supported.includes(current) && current)
-        || 
+        ||
         (preferred && supported.includes(preferred) && (!AppState.providerStatuses?.[preferred] || available.includes(preferred)) && preferred)
         || (supported.includes(defaultProvider) && (!AppState.providerStatuses?.[defaultProvider] || available.includes(defaultProvider)) && defaultProvider)
         || available[0]
@@ -647,8 +686,8 @@ function renderRunCodexHandoffPreview() {
                 <div class="run-handoff-meta">A${reviewSummary.approved || 0} / R${reviewSummary.rejected || 0} / N${reviewSummary.noted || 0}</div>
                 <div class="run-handoff-notes">
                     ${(runContext.reviewNotes || []).length
-                        ? (runContext.reviewNotes || []).map((item) => `<div class="run-handoff-note"><strong>${escapeHtml(item.status)}</strong><span>${escapeHtml(item.note)}</span></div>`).join('')
-                        : '<div class="run-empty">이 run에는 저장된 검수 메모가 없습니다.</div>'}
+            ? (runContext.reviewNotes || []).map((item) => `<div class="run-handoff-note"><strong>${escapeHtml(item.status)}</strong><span>${escapeHtml(item.note)}</span></div>`).join('')
+            : '<div class="run-empty">이 run에는 저장된 검수 메모가 없습니다.</div>'}
                 </div>
             </div>
             <div class="run-handoff-card">
@@ -666,6 +705,81 @@ function renderRunCodexHandoffPreview() {
     Utils.el('copy-run-codex-handoff-inline-btn')?.addEventListener('click', copyFocusedRunCodexHandoff);
 }
 
+function setHealthDot(dot, tone) {
+    if (!dot) return;
+    dot.classList.remove('green', 'red', 'amber');
+    dot.classList.add(tone || 'green');
+}
+
+function getGenerationBackendStatusSummary(providerInfo, status) {
+    if (AppState.providerHealthFetchError) {
+        return {
+            tone: 'red',
+            label: `${providerInfo.label} 상태 확인 불가`,
+            detail: '생성 백엔드 health 요청이 실패했습니다.',
+            chip: '생성 백엔드: 상태 확인 불가'
+        };
+    }
+    if (status?.configured === false) {
+        return {
+            tone: 'amber',
+            label: `${providerInfo.label} 설정 필요`,
+            detail: status.reason || '생성 전에 생성 백엔드 설정이 필요합니다.',
+            chip: `생성 백엔드: ${providerInfo.label} - 설정 필요`
+        };
+    }
+    if (status && status.available === false) {
+        return {
+            tone: 'red',
+            label: `${providerInfo.label} 오프라인`,
+            detail: status.reason || '생성 백엔드가 응답하지 않습니다.',
+            chip: `생성 백엔드: ${providerInfo.label} - 오프라인`
+        };
+    }
+    return {
+        tone: 'green',
+        label: `${providerInfo.label} 준비됨`,
+        detail: status?.reason || providerInfo.description || '생성 백엔드가 준비되었습니다.',
+        chip: `생성 백엔드: ${providerInfo.label} - 준비됨`
+    };
+}
+
+function getUpscaleBackendStatusSummary() {
+    const pillow = AppState.upscaleStatuses?.pillow || {};
+    const pid = AppState.upscaleStatuses?.['pid-http'] || {};
+    const pillowReady = pillow.available !== false;
+    if (AppState.providerHealthFetchError) {
+        return {
+            tone: pillowReady ? 'amber' : 'red',
+            label: '업스케일 백엔드 상태 확인 불가',
+            detail: 'Local Pillow는 앱 서버 fallback이고, PiD runner는 별도 localhost 백엔드입니다.',
+            chip: '업스케일 백엔드: 상태 확인 불가'
+        };
+    }
+    if (pid.configured && pid.available) {
+        return {
+            tone: 'green',
+            label: '업스케일 백엔드 준비됨',
+            detail: `Local Pillow + PiD runner 분리 운영 중${pid.endpoint ? ` (${pid.endpoint})` : ''}`,
+            chip: '업스케일 백엔드: Local Pillow + PiD Runner'
+        };
+    }
+    if (pid.configured && pid.available === false) {
+        return {
+            tone: pillowReady ? 'amber' : 'red',
+            label: pillowReady ? '업스케일 fallback 준비됨' : '업스케일 백엔드 오프라인',
+            detail: `Local Pillow는 사용 가능하지만 PiD runner 확인이 필요합니다${pid.reason ? ` (${pid.reason})` : ''}`,
+            chip: '업스케일 백엔드: Local Pillow / PiD 확인 필요'
+        };
+    }
+    return {
+        tone: pillowReady ? 'green' : 'red',
+        label: pillowReady ? '업스케일 fallback 준비됨' : '업스케일 백엔드 오프라인',
+        detail: 'Local Pillow는 AI_Generator 내부 fallback입니다. PiD는 LOCAL_UPSCALE_ENDPOINT로 별도 runner를 연결합니다.',
+        chip: pillowReady ? '업스케일 백엔드: Local Pillow' : '업스케일 백엔드: 오프라인'
+    };
+}
+
 function updateProviderStatusChrome() {
     const project = getCurrentProjectConfig();
     const providerId = getCurrentProviderId();
@@ -675,39 +789,22 @@ function updateProviderStatusChrome() {
     const label = Utils.el(CONFIG.DOM.PROVIDER_STATUS_LABEL);
     const detail = Utils.el(CONFIG.DOM.PROVIDER_STATUS_DETAIL);
     const chip = Utils.el(CONFIG.DOM.ACTIVE_PROVIDER_CHIP);
+    const upscaleDot = Utils.el(CONFIG.DOM.UPSCALE_STATUS_DOT);
+    const upscaleLabel = Utils.el(CONFIG.DOM.UPSCALE_STATUS_LABEL);
+    const upscaleDetail = Utils.el(CONFIG.DOM.UPSCALE_STATUS_DETAIL);
+    const upscaleChip = Utils.el(CONFIG.DOM.ACTIVE_UPSCALE_CHIP);
+    const generationSummary = getGenerationBackendStatusSummary(providerInfo, status);
+    const upscaleSummary = getUpscaleBackendStatusSummary();
 
-    if (dot) {
-        dot.classList.remove('green', 'red', 'amber');
-        if (AppState.providerHealthFetchError) dot.classList.add('red');
-        else if (status?.configured === false) dot.classList.add('amber');
-        else if (status && status.available === false) dot.classList.add('red');
-        else dot.classList.add('green');
-    }
+    setHealthDot(dot, generationSummary.tone);
+    if (label) label.textContent = generationSummary.label;
+    if (detail) detail.textContent = generationSummary.detail;
+    if (chip) chip.textContent = generationSummary.chip;
 
-    if (label) {
-        if (AppState.providerHealthFetchError) label.textContent = `${providerInfo.label} 상태 확인 불가`;
-        else if (status?.configured === false) label.textContent = `${providerInfo.label} 설정 필요`;
-        else if (status && status.available === false) label.textContent = `${providerInfo.label} 오프라인`;
-        else label.textContent = `${providerInfo.label} 준비됨`;
-    }
-
-    if (detail) {
-        detail.textContent = (AppState.providerHealthFetchError ? '헬스 체크 요청이 실패했습니다.' : '')
-            || status?.reason
-            || providerInfo.description
-            || '렌더러 상태가 준비되었습니다.';
-    }
-
-    if (chip) {
-        const statusText = AppState.providerHealthFetchError
-            ? '상태 확인 불가'
-            : status?.configured === false
-                ? '설정 필요'
-                : status && status.available === false
-                    ? '오프라인'
-                    : '준비됨';
-        chip.textContent = `렌더러: ${providerInfo.label} - ${statusText}`;
-    }
+    setHealthDot(upscaleDot, upscaleSummary.tone);
+    if (upscaleLabel) upscaleLabel.textContent = upscaleSummary.label;
+    if (upscaleDetail) upscaleDetail.textContent = upscaleSummary.detail;
+    if (upscaleChip) upscaleChip.textContent = upscaleSummary.chip;
 }
 
 function handleProviderSelectionChange(providerId) {
@@ -751,6 +848,7 @@ function summarizeRunForCompare(data) {
     const retrySource = String(metadata.retry_source || metadata.retrySource || '').trim();
     const approved = results.filter((item) => item.review_status === 'approved').length;
     const rejected = results.filter((item) => item.review_status === 'rejected').length;
+    const revisionRequested = results.filter((item) => item.review_status === 'revision_requested').length;
     const noted = results.filter((item) => (item.review_note || '').trim()).length;
     const noteHighlights = [];
     for (const item of results) {
@@ -784,6 +882,7 @@ function summarizeRunForCompare(data) {
         reviewSummary: {
             approved,
             rejected,
+            revisionRequested,
             pending: results.filter((item) => (item.review_status || 'pending') === 'pending').length,
             noted,
             noteHighlights
@@ -832,12 +931,15 @@ async function followLiveRun() {
 async function checkProviderHealth() {
     const previousProviderId = AppState.currentProviderId;
     try {
-        const resp = await fetch(CONFIG.API.HEALTH);
+        const params = new URLSearchParams({ project: AppState.currentProject });
+        const resp = await fetch(`${CONFIG.API.HEALTH}?${params.toString()}`);
         const data = await resp.json();
         AppState.providerStatuses = data.providers || {};
+        AppState.upscaleStatuses = data.upscale || {};
         AppState.providerHealthFetchError = false;
     } catch {
         AppState.providerStatuses = {};
+        AppState.upscaleStatuses = {};
         AppState.providerHealthFetchError = true;
     }
     const project = getCurrentProjectConfig();
@@ -874,24 +976,396 @@ async function uploadToR2() {
     const btn = Utils.el('r2-upload-btn');
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="spinner"></i> Uploading...'; }
     try {
-        const resp = await fetch(`${CONFIG.API.UPLOAD_R2}?project=${encodeURIComponent(AppState.currentProject)}`, { method: 'POST' });
+        const params = new URLSearchParams();
+        params.set('project', AppState.currentProject);
+        const targetRunId = getDisplayedRunId();
+        if (targetRunId) params.set('run_id', targetRunId);
+        const resp = await fetch(`${CONFIG.API.UPLOAD_R2}?${params.toString()}`, { method: 'POST' });
         const data = await resp.json();
-        if (data.error) {
-            showToast('업로드 실패: ' + data.error, 'error');
-        } else {
-            showToast(`업로드 완료! ${Object.keys(data.mappings || {}).length}개 파일`, 'success');
-            const textarea = Utils.el('mapping-json');
-            const modal = Utils.el(CONFIG.MODALS.MAPPING);
-            if (textarea && modal) {
-                textarea.value = JSON.stringify(data.mappings, null, 2);
-                modal.style.display = 'flex';
-            }
+        if (!resp.ok || data.detail || data.error) {
+            throw new Error(data.detail || data.error || 'Upload failed');
+        }
+        showToast(`업로드 완료! ${data.uploaded ?? Object.keys(data.mappings || {}).length}개 파일`, 'success');
+        const textarea = Utils.el('mapping-json');
+        const modal = Utils.el(CONFIG.MODALS.MAPPING);
+        if (textarea && modal) {
+            textarea.value = JSON.stringify(data.mappings, null, 2);
+            modal.style.display = 'flex';
         }
     } catch (e) {
         showToast('업로드 실패: ' + e.message, 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="cloud-upload"></i> 클라우드 업로드'; }
         lucide.createIcons();
+    }
+}
+
+function openUpscaleModal() {
+    const modal = Utils.el('upscale-modal');
+    if (!modal) return;
+    updateUpscaleModalState();
+    modal.style.display = 'flex';
+}
+
+function closeUpscaleModal() {
+    const modal = Utils.el('upscale-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function resetUpscaleJobUI() {
+    const panel = Utils.el('upscale-job-panel');
+    if (panel) panel.hidden = true;
+    const bar = Utils.el('upscale-progress-bar');
+    if (bar) bar.style.width = '0%';
+    const count = Utils.el('upscale-job-count');
+    if (count) count.textContent = '0 / 0';
+    const message = Utils.el('upscale-job-message');
+    if (message) message.textContent = '작업을 준비하고 있습니다.';
+    const title = Utils.el('upscale-job-title');
+    if (title) title.textContent = '업스케일 준비 중';
+}
+
+function updateUpscaleModalState() {
+    const target = Utils.el('upscale-target')?.value || 'run-crops';
+    const engine = Utils.el('upscale-engine')?.value || 'pillow';
+    const cropField = Utils.el('upscale-crops-field');
+    const fileField = Utils.el('upscale-file-field');
+    const note = Utils.el('upscale-note');
+    const isUpload = target === 'upload';
+    const usesCrops = target === 'run-crops' || target === 'run-all';
+
+    if (cropField) cropField.style.display = usesCrops ? '' : 'none';
+    if (fileField) fileField.style.display = isUpload ? '' : 'none';
+    if (!note) return;
+
+    const notes = {
+        'run-crops': '현재 갤러리 run의 crop 결과를 선택한 배율로 업스케일합니다. crop 이름을 비우면 전체 crop을 처리합니다.',
+        'run-source': '현재 갤러리 run의 원본 이미지만 업스케일합니다.',
+        'run-all': '현재 갤러리 run의 원본과 crop 결과를 모두 업스케일합니다.',
+        upload: 'PC에서 선택한 이미지를 로컬 서버에 저장한 뒤 업스케일합니다. 이 작업은 현재 run이 없어도 실행할 수 있습니다.'
+    };
+    const engineStatus = AppState.upscaleStatuses?.[engine];
+    let engineNote = '';
+    if (engine === 'pid-http') {
+        if (!engineStatus?.configured) {
+            engineNote = ' PiD HTTP는 LOCAL_UPSCALE_ENDPOINT 또는 프로젝트 upscale.endpoint 설정이 필요합니다.';
+        } else if (!engineStatus?.available) {
+            engineNote = ` PiD runner 계약 확인 실패${engineStatus.reason ? ` (${engineStatus.reason})` : ''}.`;
+        } else {
+            engineNote = ' PiD HTTP runner가 로컬 POST 계약에 응답 중입니다. 제한 라이선스 결과는 R2 업로드가 기본 차단됩니다.';
+        }
+    } else {
+        engineNote = ' 로컬 기본 엔진은 빠른 확인용 LANCZOS 리사이즈입니다.';
+    }
+    note.textContent = `${notes[target] || notes['run-crops']} 업스케일은 생성 백엔드(ComfyUI/API)와 별도로 실행됩니다.${engineNote}`;
+    if (!AppState.activeUpscaleJobId) resetUpscaleJobUI();
+}
+
+function getUpscaleCropNames() {
+    const raw = Utils.el('upscale-crops')?.value || '';
+    return raw
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+}
+
+function renderUploadedUpscaleResult(result) {
+    const previewEl = Utils.el(CONFIG.DOM.PREVIEW);
+    if (!previewEl || !result?.localUrl) return;
+
+    const url = result.localUrl;
+    const label = `${result.name || 'uploaded-image'} x${result.scale || ''}`.trim();
+    previewEl.innerHTML = `
+        <div class="uploaded-upscale-result">
+            <img src="${escapeHtml(url)}" alt="${escapeHtml(label)}">
+            <div class="uploaded-upscale-meta">
+                <strong>${escapeHtml(label)}</strong>
+                <span>${result.width || '?'} x ${result.height || '?'} · ${escapeHtml(result.engine || 'upscale')}</span>
+                <a href="${escapeHtml(url)}" target="_blank" rel="noopener">결과 열기</a>
+            </div>
+        </div>
+    `;
+}
+
+function renderUpscaleJobStatus(job) {
+    const panel = Utils.el('upscale-job-panel');
+    if (panel) panel.hidden = false;
+
+    const total = Number(job.total || 0);
+    const completed = Number(job.completed || 0);
+    const percent = total > 0 ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 5;
+    const statusLabel = {
+        queued: '업스케일 대기 중',
+        running: '업스케일 중',
+        cancelling: '취소 요청 중',
+        cancelled: '업스케일 취소됨',
+        success: '업스케일 완료',
+        partial: '일부 완료',
+        error: '업스케일 실패'
+    }[job.status] || '업스케일 중';
+
+    const title = Utils.el('upscale-job-title');
+    if (title) title.textContent = statusLabel;
+    const count = Utils.el('upscale-job-count');
+    if (count) count.textContent = `${completed} / ${total || '?'}`;
+    const bar = Utils.el('upscale-progress-bar');
+    if (bar) bar.style.width = `${job.status === 'success' || job.status === 'partial' ? 100 : percent}%`;
+    const message = Utils.el('upscale-job-message');
+    if (message) {
+        const current = job.currentItem ? ` · ${job.currentItem}` : '';
+        message.textContent = `${job.message || statusLabel}${current}`;
+    }
+}
+
+function setUpscaleJobBusy(isBusy) {
+    const runBtn = Utils.el('run-upscale-btn');
+    const cancelBtn = Utils.el('cancel-upscale-btn');
+    if (runBtn) {
+        runBtn.disabled = isBusy;
+        runBtn.innerHTML = isBusy ? '<i class="spinner"></i> 업스케일 중...' : '업스케일 실행';
+    }
+    if (cancelBtn) {
+        cancelBtn.textContent = isBusy ? '작업 취소' : '취소';
+    }
+    lucide.createIcons();
+}
+
+function isTerminalUpscaleStatus(status) {
+    return ['success', 'partial', 'error', 'cancelled'].includes(status);
+}
+
+function clearUpscaleJobPoll() {
+    if (AppState.upscaleJobPollId) {
+        clearInterval(AppState.upscaleJobPollId);
+        AppState.upscaleJobPollId = null;
+    }
+}
+
+async function finishUpscaleJob(job, target) {
+    clearUpscaleJobPoll();
+    AppState.activeUpscaleJobId = null;
+    setUpscaleJobBusy(false);
+    renderUpscaleJobStatus(job);
+
+    if (job.status === 'cancelled') {
+        showToast('업스케일이 취소되었습니다', 'warning');
+        return;
+    }
+    if (job.status === 'error') {
+        showToast(`업스케일 실패: ${job.message || '작업 실패'}`, 'error');
+        return;
+    }
+
+    const result = job.result || job;
+    const count = (result.upscaled || job.upscaled || []).length;
+    if (count === 0) {
+        showToast('업스케일 실패: 처리된 이미지가 없습니다.', 'error');
+        return;
+    }
+
+    showToast(`업스케일 완료: ${count}개`, job.status === 'partial' ? 'warning' : 'success');
+    closeUpscaleModal();
+    if (target === 'upload') {
+        renderUploadedUpscaleResult((result.upscaled || [])[0]);
+        const fileInput = Utils.el('upscale-file');
+        if (fileInput) fileInput.value = '';
+        await loadRecentRuns();
+        if (result.runId) {
+            await loadRunIntoView(result.runId);
+        }
+    } else if (result.runId) {
+        await loadRunIntoView(result.runId);
+    }
+}
+
+async function pollUpscaleJob(jobId, target) {
+    try {
+        const resp = await fetch(`${CONFIG.API.UPSCALE_JOBS}/${encodeURIComponent(jobId)}`);
+        const job = await resp.json();
+        if (!resp.ok || job.detail || job.error) {
+            throw new Error(job.detail || job.error || '업스케일 상태 확인 실패');
+        }
+        renderUpscaleJobStatus(job);
+        if (isTerminalUpscaleStatus(job.status)) {
+            await finishUpscaleJob(job, target);
+        }
+    } catch (e) {
+        clearUpscaleJobPoll();
+        AppState.activeUpscaleJobId = null;
+        setUpscaleJobBusy(false);
+        showToast(`업스케일 상태 확인 실패: ${e.message}`, 'error');
+    }
+}
+
+function startUpscaleJobPolling(job, target) {
+    clearUpscaleJobPoll();
+    AppState.activeUpscaleJobId = job.jobId;
+    renderUpscaleJobStatus(job);
+    setUpscaleJobBusy(true);
+    if (isTerminalUpscaleStatus(job.status)) {
+        finishUpscaleJob(job, target);
+        return;
+    }
+    AppState.upscaleJobPollId = setInterval(() => {
+        pollUpscaleJob(job.jobId, target);
+    }, 800);
+    pollUpscaleJob(job.jobId, target);
+}
+
+async function handleUpscaleCancel() {
+    if (!AppState.activeUpscaleJobId) {
+        closeUpscaleModal();
+        return;
+    }
+    try {
+        const resp = await fetch(`${CONFIG.API.UPSCALE_JOBS}/${encodeURIComponent(AppState.activeUpscaleJobId)}/cancel`, {
+            method: 'POST'
+        });
+        const job = await resp.json();
+        if (!resp.ok || job.detail || job.error) {
+            throw new Error(job.detail || job.error || '취소 요청 실패');
+        }
+        renderUpscaleJobStatus(job);
+        showToast('업스케일 취소 요청됨', 'warning');
+    } catch (e) {
+        showToast(`취소 실패: ${e.message}`, 'error');
+    }
+}
+
+async function runUpscaleFromModal() {
+    const target = Utils.el('upscale-target')?.value || 'run-crops';
+    const scale = Number(Utils.el('upscale-scale')?.value || 2);
+    const engine = Utils.el('upscale-engine')?.value || 'pillow';
+    let jobStarted = false;
+    setUpscaleJobBusy(true);
+    resetUpscaleJobUI();
+
+    try {
+        let job;
+        if (target === 'upload') {
+            const fileInput = Utils.el('upscale-file');
+            const file = fileInput?.files?.[0];
+            if (!file) {
+                throw new Error('업스케일할 PC 이미지를 선택하세요.');
+            }
+
+            const formData = new FormData();
+            formData.append('project', AppState.currentProject);
+            formData.append('scale', String(scale));
+            formData.append('engine', engine);
+            formData.append('file', file);
+
+            const resp = await fetch(CONFIG.API.UPSCALE_UPLOAD_JOBS, {
+                method: 'POST',
+                body: formData
+            });
+            job = await resp.json();
+            if (!resp.ok || job.detail || job.error) {
+                throw new Error(job.detail || job.error || '업로드 이미지 업스케일 시작 실패');
+            }
+        } else {
+            const targetRunId = getDisplayedRunId();
+            if (!targetRunId) {
+                throw new Error('현재 선택된 run이 없습니다. PC 이미지 선택을 사용하거나 먼저 결과를 불러오세요.');
+            }
+
+            const sourceByTarget = {
+                'run-crops': 'crops',
+                'run-source': 'source',
+                'run-all': 'all'
+            };
+            const body = {
+                project: AppState.currentProject,
+                run_id: targetRunId,
+                source: sourceByTarget[target] || 'crops',
+                scale,
+                engine
+            };
+            const cropNames = getUpscaleCropNames();
+            if ((target === 'run-crops' || target === 'run-all') && cropNames.length) {
+                body.crop_names = cropNames;
+            }
+
+            const resp = await fetch(CONFIG.API.UPSCALE_JOBS, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            job = await resp.json();
+            if (!resp.ok || job.detail || job.error) {
+                throw new Error(job.detail || job.error || '업스케일 시작 실패');
+            }
+        }
+
+        jobStarted = true;
+        startUpscaleJobPolling(job, target);
+    } catch (e) {
+        showToast(`업스케일 실패: ${e.message}`, 'error');
+    } finally {
+        if (!jobStarted) {
+            AppState.activeUpscaleJobId = null;
+            setUpscaleJobBusy(false);
+        }
+    }
+}
+
+function formatBytes(bytes) {
+    const value = Number(bytes || 0);
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function updateUpscaleCleanupSummary(payload) {
+    const summary = Utils.el('upscale-cleanup-summary');
+    if (!summary) return;
+    const count = Number(payload.candidateCount || 0);
+    const bytes = formatBytes(payload.candidateBytes || payload.deletedBytes || 0);
+    if (payload.dryRun) {
+        summary.textContent = `정리 후보 ${count}개 (${bytes}). 참조 중인 파일 ${payload.keptReferenced || 0}개는 유지됩니다.`;
+    } else {
+        summary.textContent = `삭제 ${payload.deleted || 0}개 (${formatBytes(payload.deletedBytes || 0)}). 오류 ${payload.errors?.length || 0}개.`;
+    }
+}
+
+async function runUpscaleCleanup(dryRun = true) {
+    const button = Utils.el(dryRun ? 'preview-upscale-cleanup-btn' : 'run-upscale-cleanup-btn');
+    const originalText = button?.textContent || '';
+    if (button) {
+        button.disabled = true;
+        button.textContent = dryRun ? '확인 중...' : '정리 중...';
+    }
+    try {
+        const resp = await fetch(CONFIG.API.UPSCALE_CLEANUP, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                project: AppState.currentProject,
+                older_than_days: 7,
+                dry_run: dryRun,
+                include_inputs: true,
+                include_upscaled: true,
+                keep_referenced: true
+            })
+        });
+        const payload = await resp.json();
+        if (!resp.ok || payload.detail || payload.error) {
+            throw new Error(payload.detail || payload.error || '업스케일 파일 정리 실패');
+        }
+        updateUpscaleCleanupSummary(payload);
+        if (dryRun) {
+            showToast(`정리 후보 ${payload.candidateCount || 0}개 확인`, 'info');
+        } else {
+            showToast(`업스케일 파일 ${payload.deleted || 0}개 정리`, payload.errors?.length ? 'warning' : 'success');
+        }
+    } catch (e) {
+        showToast(`정리 실패: ${e.message}`, 'error');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
     }
 }
 
@@ -1105,6 +1579,7 @@ function resetProjectWorkspace() {
         AppState.pollIntervalId = null;
     }
     setScenePlannerState({});
+    toggleContextualUI();
 
     renderPromptTable(AppState.currentPrompts);
 
@@ -1175,13 +1650,13 @@ function updateProjectChrome(project) {
 
     if (capabilityNote) {
         if (supportsReferenceAssets) {
-            capabilityNote.textContent = `${providerLabel}는 선택된 레퍼런스를 렌더 과정에 직접 사용할 수 있습니다.`;
+            capabilityNote.textContent = `${providerLabel}: 레퍼런스 직접 주입 지원`;
         } else if (!providerSupportsReferences) {
-            capabilityNote.textContent = `${providerLabel}는 현재 이 adapter에서 직접 레퍼런스 conditioning을 지원하지 않습니다. 대신 레퍼런스는 장면 설계와 검수 기준에 반영됩니다.`;
+            capabilityNote.textContent = `${providerLabel}: 레퍼런스는 기획 및 검수 기준으로만 활용됩니다`;
         } else if (isReferenceProject) {
-            capabilityNote.textContent = `${providerLabel}는 이 프로젝트를 planning-first 방식으로 처리합니다. 직접 주입되지 않아도 레퍼런스는 장면 구성과 검수에 반영됩니다.`;
+            capabilityNote.textContent = `${providerLabel}: planning-first 방식 처리 (레퍼런스 간접 반영)`;
         } else {
-            capabilityNote.textContent = `${providerLabel}는 레퍼런스 라이브러리를 배치 구성에는 사용하지만, 이 워크플로우에서는 직접 conditioning이 아직 활성화되어 있지 않습니다.`;
+            capabilityNote.textContent = `${providerLabel}: 이 워크플로우에서 직접 conditioning이 비활성화됨`;
         }
         capabilityNote.style.display = '';
     }
@@ -1265,6 +1740,7 @@ async function switchProject(projectId, options = {}) {
     await loadReferenceAssets();
     await loadSceneTemplates();
     await loadRecentRuns();
+    await checkProviderHealth();
     await checkExistingBatch();
 }
 
@@ -1680,17 +2156,17 @@ function renderRetryLineagePanel() {
         </div>
         <div class="retry-lineage-list">
             ${items.map((item) => {
-                const review = item.reviewSummary || {};
-                const comparison = item.comparisonToParent || null;
-                const changes = item.changesFromParent || null;
-                const retry = item.retry || {};
-                const outcomeTone = getRetryOutcomeTone(comparison?.label);
-                const depthClass = `depth-${Math.min(item.depth || 0, 4)}`;
-                const noteText = (review.noteHighlights || []).join(' | ') || '검수 메모 없음';
-                const retryMeta = retry.fromRunId
-                    ? `Run ${String(retry.fromRunId).slice(0, 8)} 에서 재시도${retry.source ? ` / ${retry.source}` : ''}`
-                    : '루트 run';
-                return `
+        const review = item.reviewSummary || {};
+        const comparison = item.comparisonToParent || null;
+        const changes = item.changesFromParent || null;
+        const retry = item.retry || {};
+        const outcomeTone = getRetryOutcomeTone(comparison?.label);
+        const depthClass = `depth-${Math.min(item.depth || 0, 4)}`;
+        const noteText = (review.noteHighlights || []).join(' | ') || '검수 메모 없음';
+        const retryMeta = retry.fromRunId
+            ? `Run ${String(retry.fromRunId).slice(0, 8)} 에서 재시도${retry.source ? ` / ${retry.source}` : ''}`
+            : '루트 run';
+        return `
                     <div class="retry-lineage-item ${depthClass} ${item.isCurrent ? 'current' : ''}">
                         <div class="retry-lineage-top">
                             <div class="retry-lineage-title">
@@ -1726,7 +2202,7 @@ function renderRetryLineagePanel() {
                         </div>
                     </div>
                 `;
-            }).join('')}
+    }).join('')}
         </div>
     `;
 
@@ -1990,8 +2466,8 @@ function renderRunViewState() {
                 <div class="run-view-copy">
                     <strong>과거 run을 보고 있습니다</strong>
                     <span>${liveRunId
-                        ? `현재 Run ${String(displayedRunId || '').slice(0, 8)} 을 보고 있습니다. Live run ${String(liveRunId || '').slice(0, 8)} 은 별도로 계속 추적 중입니다.`
-                        : `저장된 Run ${String(displayedRunId || '').slice(0, 8)} 스냅샷을 보고 있습니다.`}</span>
+                ? `현재 Run ${String(displayedRunId || '').slice(0, 8)} 을 보고 있습니다. Live run ${String(liveRunId || '').slice(0, 8)} 은 별도로 계속 추적 중입니다.`
+                : `저장된 Run ${String(displayedRunId || '').slice(0, 8)} 스냅샷을 보고 있습니다.`}</span>
                 </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
                     ${copyRunHandoffButton}
@@ -2221,6 +2697,13 @@ function renderSceneTemplates() {
             renderSceneTemplates();
         });
     });
+
+    const refBadge = document.getElementById('reference-selection-count-badge');
+    if (refBadge) {
+        const count = AppState.selectedReferenceAssets?.length || 0;
+        refBadge.textContent = count;
+        refBadge.style.display = count > 0 ? 'inline-flex' : 'none';
+    }
 
     updateComposeSelectionSummary();
     lucide.createIcons();
@@ -2579,16 +3062,14 @@ function renderReferenceAssets() {
             : '기준 캐릭터, 감정 시트, 역할 키트를 먼저 넣어두세요';
         empty.innerHTML = `
             <i data-lucide="folder-search"></i>
-            <p>아직 등록된 레퍼런스 이미지가 없습니다</p>
-            <p class="empty-hint">${hint}</p>
-            <p class="empty-hint">아래 구조 가이드를 보고 바로 어떤 폴더에 무엇을 넣을지 결정할 수 있습니다.</p>
+            <p>등록된 레퍼런스가 없습니다.</p>
         `;
         const presets = AppState.referencePolicy?.libraryPresets || [];
         const libraryPresets = presets.filter((item) => !(item.path || '').startsWith(`${AppState.referencePolicy?.temporaryRoot || 'temp'}/`));
         const temporaryPresets = presets.filter((item) => (item.path || '').startsWith(`${AppState.referencePolicy?.temporaryRoot || 'temp'}/`));
         grid.innerHTML = [
-            renderReferenceBlueprintGroup('프로젝트 라이브러리 구조', '항상 유지되는 기준 자산 경로입니다. 베이스, 감정, 역할, 장면을 먼저 채우면 됩니다.', libraryPresets, '아직 정의된 라이브러리 경로가 없습니다.'),
-            renderReferenceBlueprintGroup('임시 레퍼런스 구조', '이번 배치에서만 쓰는 참고 이미지는 임시 경로에 넣고, 가치가 있으면 나중에 라이브러리로 승격합니다.', temporaryPresets, '임시 경로가 아직 정의되지 않았습니다.')
+            renderReferenceBlueprintGroup('라이브러리 기준', '공통 기준 자산', libraryPresets, '정의된 경로가 없습니다.'),
+            renderReferenceBlueprintGroup('임시 레퍼런스', '이번 생성에만 사용할 보조 경로', temporaryPresets, '정의된 경로가 없습니다.')
         ].join('');
         grid.querySelectorAll('.reference-blueprint-card').forEach((button) => {
             button.addEventListener('click', () => {
@@ -2604,8 +3085,8 @@ function renderReferenceAssets() {
     const libraryAssets = AppState.referenceAssets.filter((asset) => !asset.isTemporary);
     const temporaryAssets = AppState.referenceAssets.filter((asset) => asset.isTemporary);
     grid.innerHTML = [
-        renderReferenceSectionGroup('프로젝트 라이브러리', '반복 배치에 공통으로 쓰는 기준 자산입니다.', libraryAssets),
-        renderReferenceSectionGroup('임시 레퍼런스', '이번 배치에서만 쓰는 보조 참고 이미지입니다.', temporaryAssets)
+        renderReferenceSectionGroup('프로젝트 라이브러리', '', libraryAssets),
+        renderReferenceSectionGroup('임시 레퍼런스', '', temporaryAssets)
     ].join('');
 
     document.querySelectorAll('.reference-checkbox').forEach((checkbox) => {
@@ -2669,12 +3150,14 @@ function renderPromptTable(prompts) {
                 <span class="badge ${p.is_manual ? 'manual' : 'kemi'}">${p.is_manual ? 'User' : 'CSV'}</span>
                 ${p.aspect_ratio ? `<span class="badge ar-badge">${p.aspect_ratio}</span>` : ''}
             </td>
-            <td style="min-width: 150px;">${p.desc_ko}</td>
-            <td><code>${p.prompt}</code></td>
+            <td style="min-width: 150px;"><div contenteditable="true" class="editable-cell" onblur="AppState.currentPrompts[${idx}].desc_ko = this.innerText" data-tooltip="클릭해서 수정하세요">${p.desc_ko}</div></td>
+            <td><code contenteditable="true" class="editable-cell" onblur="AppState.currentPrompts[${idx}].prompt = this.innerText" data-tooltip="클릭해서 수정하세요">${p.prompt}</code></td>
         </tr>
     `).join('');
     updateSelectionCounts();
     document.querySelectorAll('.prompt-checkbox').forEach(cb => { cb.onchange = updateSelectionCounts; });
+    const _fab = Utils.el(CONFIG.DOM.FAB_BTN);
+    if (_fab) { const _cnt = document.querySelectorAll('.prompt-checkbox:checked').length; _fab.classList.toggle('fab-ready', _cnt > 0); }
 }
 
 function buildComposeSelectionSummary() {
@@ -2735,8 +3218,11 @@ function applyPreset() {
     if (val === 'custom') return;
     const preset = CONFIG.STYLE_PRESETS[val];
     if (preset) {
-        document.getElementById('style-prompt').value = preset.p;
-        document.getElementById('negative-prompt').value = preset.n;
+        const _sp = document.getElementById('style-prompt');
+        const _np = document.getElementById('negative-prompt');
+        _sp.value = preset.p; _np.value = preset.n;
+        [_sp, _np].forEach(el => { el.style.background = 'rgba(99,102,241,0.25)'; setTimeout(() => { el.style.background = ''; }, 400); });
+        showToast(val + ' style applied', 'success');
     }
 }
 
@@ -2833,6 +3319,7 @@ function buildAssistedSceneSpec(selectedPrompts) {
 function buildGenerationPayload(selectedPrompts) {
     const generationMode = getGenerationMode();
     const sceneSpec = generationMode === 'assisted' ? buildAssistedSceneSpec(selectedPrompts) : null;
+    const hasSlotRequests = selectedPrompts.some((prompt) => (prompt._target_crops || prompt.slots || []).length);
     return {
         project: AppState.currentProject,
         mode: generationMode,
@@ -2842,7 +3329,7 @@ function buildGenerationPayload(selectedPrompts) {
         scene_spec: sceneSpec,
         prompts: selectedPrompts,
         reference_assets: AppState.selectedReferenceAssets,
-        types: ['thumb', 'hero'],
+        types: hasSlotRequests ? ['source'] : ['thumb', 'hero'],
         style_prompt: document.getElementById('style-prompt').value,
         negative_prompt: document.getElementById('negative-prompt').value,
         global_aspect_ratio: document.getElementById('default-ar').value,
@@ -2863,6 +3350,8 @@ function renderPreflightValidation(result) {
         summary.innerHTML = '';
         errors.innerHTML = '';
         warnings.innerHTML = '';
+        const startNowBtn = Utils.el('start-now-btn');
+        if (startNowBtn) startNowBtn.disabled = false;
         return;
     }
 
@@ -2894,6 +3383,30 @@ function renderPreflightValidation(result) {
         .map((item) => `<div class="preflight-item">${item}</div>`)
         .join('');
     panel.style.display = '';
+    const startNowBtn = Utils.el('start-now-btn');
+    if (startNowBtn) startNowBtn.disabled = (result.errors || []).length > 0;
+}
+
+function applyClientPreflightGuards(result) {
+    if (!result) return result;
+    const guarded = {
+        ...result,
+        errors: [...(result.errors || [])],
+        warnings: [...(result.warnings || [])]
+    };
+    const providerId = result.summary?.providerId || getCurrentProviderId();
+    const status = AppState.providerStatuses?.[providerId] || null;
+    if (AppState.providerHealthFetchError) {
+        guarded.errors.push('렌더러 상태를 확인하지 못했습니다. 서버 상태를 확인한 뒤 다시 시도하세요.');
+    } else if (status?.configured === false) {
+        guarded.errors.push(status.reason || '선택한 렌더러 설정이 필요합니다.');
+    } else if (status && status.available === false) {
+        guarded.errors.push(status.reason || '선택한 렌더러가 오프라인입니다.');
+    }
+    guarded.errors = [...new Set(guarded.errors.filter(Boolean))];
+    guarded.warnings = [...new Set(guarded.warnings.filter(Boolean))];
+    guarded.ok = guarded.errors.length === 0;
+    return guarded;
 }
 
 async function fetchPreflightValidation(payload) {
@@ -2906,10 +3419,11 @@ async function fetchPreflightValidation(payload) {
     if (!resp.ok) {
         throw new Error(data.detail || 'Preflight validation failed');
     }
-    AppState.lastPreflight = data;
-    renderPreflightValidation(data);
+    const guarded = applyClientPreflightGuards(data);
+    AppState.lastPreflight = guarded;
+    renderPreflightValidation(guarded);
     updateCodexHandoffPanel();
-    return data;
+    return guarded;
 }
 
 async function refreshConfirmPreflight() {
@@ -3160,20 +3674,30 @@ function updateUI(data, options = {}) {
             div.dataset.index = idx;
 
             if (item.url) {
+                const imageUrl = getGalleryMainImageUrl(item);
+                const situation = getGallerySituationText(item, data);
+                const cropPreviews = renderGalleryCropPreviews(item);
                 div.innerHTML = `
-                    <img src="${item.url}" alt="${item.name}" loading="lazy">
+                    <div class="gallery-main-media">
+                        <img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" loading="lazy">
+                    </div>
+                    <div class="gallery-card-body">
+                        <div class="gallery-card-title">${escapeHtml(item.name)}</div>
+                        ${situation ? `<div class="gallery-situation">${escapeHtml(situation)}</div>` : ''}
+                        ${cropPreviews}
+                    </div>
                     <div class="gallery-overlay">
-                        <span class="gallery-name">${item.name}</span>
+                        <span class="gallery-name">${escapeHtml(item.name)}</span>
                         <span class="mode-badge ${data.mode || 'direct'}">${data.mode || 'direct'}</span>
-                        <span class="badge ${item.type}">${item.type}</span>
-                        ${item.review_status && item.review_status !== 'pending' ? `<span class="review-badge ${item.review_status}">${item.review_status === 'approved' ? 'Approved' : 'Rejected'}</span>` : ''}
+                        <span class="badge ${item.type}">${escapeHtml(item.type)}</span>
+                        ${item.review_status && item.review_status !== 'pending' ? `<span class="review-badge ${item.review_status}">${escapeHtml(getReviewStatusLabel(item.review_status))}</span>` : ''}
                     </div>`;
             } else {
                 div.innerHTML = `
                     <div class="gallery-placeholder ${item.status}">
                         <span>${item.status === 'timeout' ? 'Timed Out' : 'Failed'}</span>
                         <span class="mode-badge ${data.mode || 'direct'}">${data.mode || 'direct'}</span>
-                        <span class="gallery-name">${item.name} (${item.type})</span>
+                        <span class="gallery-name">${escapeHtml(item.name)} (${escapeHtml(item.type)})</span>
                     </div>`;
             }
             div.addEventListener('click', () => openImageDetail(idx));
@@ -3187,7 +3711,7 @@ function updateUI(data, options = {}) {
         const lastSuccess = [...newItems].reverse().find(r => r.url);
         if (lastSuccess) {
             const previewEl = Utils.el(CONFIG.DOM.PREVIEW);
-            if (previewEl) previewEl.innerHTML = `<img src="${lastSuccess.url}" class="fade-in">`;
+            if (previewEl) previewEl.innerHTML = `<img src="${escapeHtml(getGalleryMainImageUrl(lastSuccess))}" class="fade-in">`;
         }
     }
 }
@@ -3197,6 +3721,122 @@ function syncCurrentRunIdFromStatus(data, syncCurrentRun = true) {
     if (data.run_id && data.is_running) return data.run_id;
     if (!data.is_running) return null;
     return AppState.currentRunId;
+}
+
+function getGalleryMainImageUrl(item) {
+    const crops = item?._crops || {};
+    const upscaledSource = item?._upscaled?.source || item?._upscaled?.upload;
+    return upscaledSource?.localUrl || upscaledSource?.url || crops['feed-media']?.localUrl || crops['feed-media']?.url || item.localUrl || item.url || '';
+}
+
+function getGallerySituationText(item, data) {
+    const scene = data?.request?.sceneSpec?.scene || {};
+    const sceneText = scene.situation || scene.background || '';
+    const metadata = item?._metadata || {};
+    const prompt = item?.prompt || item?.positive || '';
+    return (metadata.importRunName || sceneText || prompt || '').trim();
+}
+
+function renderGalleryCropPreviews(item) {
+    const crops = item?._crops || {};
+    const entries = Object.entries(crops);
+    if (!entries.length) return '';
+    return `
+        <div class="gallery-crop-strip" aria-label="crop previews">
+            ${entries.map(([name, crop]) => {
+                const width = Number(crop.width || 1);
+                const height = Number(crop.height || 1);
+                const ratio = height ? width / height : 1;
+                const url = crop.localUrl || crop.url || '';
+                return `
+                    <div class="gallery-crop-preview" style="--crop-ratio:${ratio};">
+                        <img src="${escapeHtml(url)}" alt="${escapeHtml(name)} preview" loading="lazy">
+                        <span>${escapeHtml(name)}</span>
+                    </div>`;
+            }).join('')}
+        </div>`;
+}
+
+function getUpscaleSourceUrl(item, sourceKey) {
+    const crops = item?._crops || {};
+    if (sourceKey && sourceKey !== 'source' && sourceKey !== 'upload' && crops[sourceKey]) {
+        return crops[sourceKey].localUrl || crops[sourceKey].url || '';
+    }
+    return item?.localUrl || item?.url || '';
+}
+
+function renderDetailUpscaleCompare(item, activeBySource) {
+    const entries = Object.entries(activeBySource || {})
+        .filter(([, version]) => version?.localUrl || version?.url)
+        .slice(0, 3);
+    if (!entries.length) return '';
+
+    return `
+        <div class="upscale-compare-section">
+            ${entries.map(([sourceKey, version]) => {
+                const originalUrl = getUpscaleSourceUrl(item, sourceKey);
+                const upscaledUrl = version.localUrl || version.url || '';
+                const label = [
+                    sourceKey,
+                    version.engine || 'upscale',
+                    version.scale ? `x${version.scale}` : '',
+                    version.width && version.height ? `${version.width}x${version.height}` : ''
+                ].filter(Boolean).join(' · ');
+                return `
+                    <div class="upscale-compare-pair">
+                        <div class="upscale-compare-image">
+                            <span>원본</span>
+                            ${originalUrl ? `<img src="${escapeHtml(originalUrl)}" alt="${escapeHtml(sourceKey)} original">` : '<div class="upscale-compare-empty">원본 없음</div>'}
+                        </div>
+                        <div class="upscale-compare-image">
+                            <span>${escapeHtml(label)}</span>
+                            <img src="${escapeHtml(upscaledUrl)}" alt="${escapeHtml(sourceKey)} upscaled">
+                        </div>
+                    </div>`;
+            }).join('')}
+        </div>`;
+}
+
+function renderDetailUpscaleVersions(item) {
+    const panel = Utils.el('detail-upscale-panel');
+    const list = Utils.el('detail-upscale-versions');
+    if (!panel || !list) return;
+
+    const history = item?._upscale_history || [];
+    if (!history.length) {
+        panel.hidden = true;
+        list.innerHTML = '';
+        return;
+    }
+
+    const activeBySource = item?._upscaled || {};
+    panel.hidden = false;
+    const compareHtml = renderDetailUpscaleCompare(item, activeBySource);
+    const versionHtml = history.slice().reverse().map((version) => {
+        const sourceKey = version.sourceKey || version.source || 'source';
+        const active = activeBySource[sourceKey]?.versionId === version.versionId;
+        const label = [
+            sourceKey,
+            version.engine || 'upscale',
+            version.scale ? `x${version.scale}` : '',
+            version.width && version.height ? `${version.width}x${version.height}` : ''
+        ].filter(Boolean).join(' · ');
+        const localUrl = version.localUrl || version.url || '';
+        return `
+            <div class="upscale-version-item ${active ? 'active' : ''}">
+                <div class="upscale-version-main">
+                    <strong>${escapeHtml(label)}</strong>
+                    <span>${escapeHtml(version.versionId || '')}</span>
+                </div>
+                <div class="upscale-version-actions">
+                    ${localUrl ? `<a class="btn btn-secondary btn-mini" href="${escapeHtml(localUrl)}" target="_blank" rel="noopener">열기</a>` : ''}
+                    <button class="btn btn-secondary btn-mini" data-upscale-version="${escapeHtml(version.versionId || '')}" data-source-key="${escapeHtml(sourceKey)}" ${active ? 'disabled' : ''}>
+                        ${active ? '대표' : '대표로 사용'}
+                    </button>
+                </div>
+            </div>`;
+    }).join('');
+    list.innerHTML = compareHtml + versionHtml;
 }
 
 // --- Gallery Filters ---
@@ -3228,8 +3868,9 @@ function openImageDetail(index) {
 
     Utils.el('detail-name').textContent = `${item.name} (${item.type})`;
     const img = Utils.el('detail-img');
-    if (item.url) {
-        img.src = item.url;
+    const detailImageUrl = getGalleryMainImageUrl(item);
+    if (detailImageUrl) {
+        img.src = detailImageUrl;
         img.style.display = 'block';
     } else {
         img.style.display = 'none';
@@ -3243,10 +3884,12 @@ function openImageDetail(index) {
         <div><strong>소요 시간:</strong> ${item.duration ? item.duration.toFixed(1) + 's' : '없음'}</div>
         <div><strong>검수:</strong> <span class="review-badge ${item.review_status || 'pending'}">${item.review_status || 'pending'}</span></div>
         <div><strong>레퍼런스:</strong> ${(item._reference_assets || []).length}개 선택</div>
+        <div><strong>업스케일:</strong> ${Object.keys(item._upscaled || {}).length}개</div>
     `;
 
     Utils.el('detail-prompt-text').textContent = item.positive || item.prompt || '';
     Utils.el('detail-negative-text').textContent = item.negative || '';
+    renderDetailUpscaleVersions(item);
     const noteInput = Utils.el('detail-review-note');
     if (noteInput) noteInput.value = item.review_note || '';
 
@@ -3271,6 +3914,43 @@ function navigateDetail(direction) {
     }
 }
 
+async function handleUpscaleVersionClick(event) {
+    const button = event.target.closest('[data-upscale-version]');
+    if (!button || button.disabled || currentDetailIndex < 0) return;
+    const versionId = button.dataset.upscaleVersion || '';
+    const sourceKey = button.dataset.sourceKey || 'source';
+    const runId = getReviewTargetRunId() || getDisplayedRunId() || '';
+    if (!runId) {
+        showToast('업스케일 버전을 저장할 run이 없습니다', 'error');
+        return;
+    }
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = '변경 중...';
+    try {
+        const params = new URLSearchParams({
+            project: AppState.currentProject,
+            run_id: runId
+        });
+        const resp = await fetch(`${CONFIG.API.REVIEW}/${currentDetailIndex}/upscale-version?${params.toString()}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sourceKey, versionId })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.detail || data.error) {
+            throw new Error(data.detail || data.error || '업스케일 버전 변경 실패');
+        }
+        await loadRunIntoView(runId);
+        openImageDetail(currentDetailIndex);
+        showToast('대표 업스케일 버전을 변경했습니다', 'success');
+    } catch (e) {
+        showToast(`버전 변경 실패: ${e.message}`, 'error');
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
 async function reviewCurrentImage(status) {
     if (currentDetailIndex < 0) return;
     try {
@@ -3284,7 +3964,7 @@ async function reviewCurrentImage(status) {
         if (!resp.ok || body.detail) {
             throw new Error(body.detail || 'Review update failed');
         }
-        showToast(status === 'approved' ? '승인됨' : '거부됨', status === 'approved' ? 'success' : 'error');
+        showToast(getReviewStatusLabel(status), status === 'approved' ? 'success' : status === 'revision_requested' ? 'warning' : 'error');
         const data = getStatusData();
         if (data?.results?.[currentDetailIndex]) {
             data.results[currentDetailIndex].review_status = status;
@@ -3303,9 +3983,10 @@ async function reviewCurrentImage(status) {
             if (status !== 'pending') {
                 const overlay = galleryItem.querySelector('.gallery-overlay');
                 if (overlay) overlay.insertAdjacentHTML('beforeend',
-                    `<span class="review-badge ${status}">${status === 'approved' ? 'Approved' : 'Rejected'}</span>`);
+                    `<span class="review-badge ${status}">${getReviewStatusLabel(status)}</span>`);
             }
         }
+        updateGalleryCounts();
         await loadRecentRuns();
     } catch (e) {
         console.error('Review failed:', e);
@@ -3341,13 +4022,94 @@ async function saveCurrentReviewNote() {
 
 function getStatusData() { return AppState.lastStatusData; }
 
+function getReviewStatusLabel(status) {
+    if (status === 'approved') return 'Approved';
+    if (status === 'rejected') return 'Rejected';
+    if (status === 'revision_requested') return 'Revision';
+    return status || 'pending';
+}
+
+function getCodexImportSlots(contentType, assetKind) {
+    if (assetKind === 'result-artwork' || contentType === 'result') return ['result-card', 'share-og', 'share-story'];
+    if (contentType === 'reaction') return ['feed-media', 'content-header-compact', 'option-image', 'share-og'];
+    if (contentType === 'quiz') return ['feed-media', 'content-header-compact', 'option-image', 'share-og'];
+    if (contentType === 'ranking-poll') return ['feed-media', 'content-header-compact', 'share-og'];
+    if (contentType === 'poll') return ['feed-compact', 'feed-media', 'content-header-compact', 'share-story'];
+    if (contentType === 'test') return ['feed-media', 'content-header-compact', 'result-card', 'share-og'];
+    return ['feed-media', 'share-og'];
+}
+
+function getCodexImportStoragePrefix(contentType, contentId) {
+    const safeType = String(contentType || 'content').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'content';
+    const safeId = String(contentId || 'unassigned').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'unassigned';
+    return `${safeType}/${safeId}`;
+}
+
+async function importCodexImage() {
+    const sourcePath = Utils.el('codex-import-path')?.value?.trim() || '';
+    if (!sourcePath) {
+        showToast('이미지 경로를 입력하세요', 'warning');
+        return;
+    }
+    const contentType = Utils.el('codex-import-content-type')?.value || 'reaction';
+    const assetKind = Utils.el('codex-import-asset-kind')?.value || 'character-scene';
+    const contentId = Utils.el('codex-import-content-id')?.value?.trim() || '';
+    const altText = Utils.el('codex-import-alt')?.value?.trim() || contentId || 'Codex image';
+    const prompt = Utils.el('codex-import-prompt')?.value?.trim() || '';
+    const requestId = ['codex', contentId || contentType, assetKind, Date.now().toString(36)].join('-');
+    const button = Utils.el('codex-import-btn');
+    try {
+        if (button) button.disabled = true;
+        const resp = await fetch(CONFIG.API.CODEX_IMPORT, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                project: AppState.currentProject,
+                run_name: 'Codex import',
+                images: [{
+                    source_path: sourcePath,
+                    request_id: requestId,
+                    content_type: contentType,
+                    content_id: contentId,
+                    asset_kind: assetKind,
+                    category: contentType,
+                    slots: getCodexImportSlots(contentType, assetKind),
+                    prompt,
+                    negative_prompt: 'text, letters, logo, watermark, app screenshot, phone frame, distorted hands, broken anatomy',
+                    style_preset: 'codex-generated',
+                    alt_text: altText,
+                    target_storage: { type: 'r2', keyPrefix: getCodexImportStoragePrefix(contentType, contentId) },
+                    provider_params: { sourceProvider: 'codex' },
+                    review_policy: { noText: true, cropSafe: true, avoidStereotypes: true },
+                    metadata: { importedFrom: 'codex-ui' }
+                }]
+            })
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.detail) {
+            throw new Error(data.detail || 'Codex import failed');
+        }
+        showToast(`Codex 이미지 ${data.count || 1}장 가져옴`, 'success');
+        await loadRecentRuns();
+        if (data.runId) {
+            await loadRunIntoView(data.runId);
+        }
+    } catch (e) {
+        console.error('Codex import failed:', e);
+        showToast(`Codex import 실패: ${e.message}`, 'error');
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
 // --- Toast Notification ---
 function showToast(message, type = 'info') {
     const container = Utils.el('toast-container');
     if (!container) return;
+    const _icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
-    toast.textContent = message;
+    toast.innerHTML = `<span class="toast-icon">${_icons[type] || 'ℹ️'}</span><span>${message}</span>`;
     container.appendChild(toast);
     setTimeout(() => toast.classList.add('show'), 10);
     setTimeout(() => {
@@ -3362,6 +4124,18 @@ async function cancelBatch() {
         await fetch(CONFIG.API.CANCEL_BATCH, { method: 'POST' });
         showToast('생성 중지 요청됨', 'warning');
     } catch (e) { console.error('Cancel failed:', e); }
+}
+
+// --- Execution Config Toggle ---
+function toggleExecutionConfig() {
+    const panel = Utils.el('execution-config-panel');
+    if (!panel) return;
+    panel.classList.toggle('collapsed');
+    const icon = panel.querySelector('.collapse-icon');
+    if (icon) {
+        icon.setAttribute('data-lucide', panel.classList.contains('collapsed') ? 'chevron-right' : 'chevron-down');
+        lucide.createIcons();
+    }
 }
 
 // --- Style Config Toggle ---
@@ -3406,10 +4180,13 @@ function updateGalleryCounts() {
     if (summary && all > 0) {
         const approved = grid.querySelectorAll('.review-badge.approved').length;
         const rejected = grid.querySelectorAll('.review-badge.rejected').length;
-        summary.textContent = `${all}장 | 승인 ${approved} | 거부 ${rejected}`;
+        const revision = grid.querySelectorAll('.review-badge.revision_requested').length;
+        summary.textContent = `${all}장 | 승인 ${approved} | 수정 ${revision} | 거부 ${rejected}`;
     }
 
-    // Show upload button only if images exist
+    // Show upload button only if images exist; upscale can also start from a PC image.
     const uploadBtn = Utils.el('r2-upload-btn');
     if (uploadBtn) uploadBtn.style.display = all > 0 ? '' : 'none';
+    const upscaleBtn = Utils.el('upscale-btn');
+    if (upscaleBtn) upscaleBtn.style.display = '';
 }

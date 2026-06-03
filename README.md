@@ -1,6 +1,36 @@
 # Kemi AI Studio (Image Generator)
 
+## Local Upscale Runner (Personal Use)
+
+AI_Generator keeps PiD-style upscaling as a local-only extension. The app does not bundle or download NVIDIA PiD weights, and `pid` / `pid-http` outputs are blocked from R2 upload by default unless the project explicitly enables restricted uploads.
+
+Use the contract stub to verify the web-server path before installing a real model backend:
+
+```powershell
+python scripts/pid_http_runner_stub.py --host 127.0.0.1 --port 8765 --allowed-root outputs
+$env:LOCAL_UPSCALE_ENDPOINT="http://127.0.0.1:8765/upscale"
+python app.py
+```
+
+The stub implements `ai-generator-upscale-v1` with Pillow/LANCZOS and is for local contract testing, not PiD image quality. A future real PiD backend should keep the same `POST /upscale` contract, stay bound to `127.0.0.1`, and restrict file reads/writes to the configured `outputs` root.
+
 AI 이미지 배치 생성 + 리뷰 도구. ComfyUI 기반 로컬 생성 + 웹 UI 관리.
+
+> Multi-project integration starts from [docs/project-integration-contract.md](docs/project-integration-contract.md).
+> New projects should prepare a project config, image request file, reference assets, output profiles, and an import/sync script.
+
+---
+
+## 모델/업스케일 라이선스 정책
+
+- 현재 기본 후처리는 crop/profile별 리사이즈이며, AI 업스케일러는 아직 기본 기능이 아니다.
+- NVIDIA PiD는 개인 로컬 사용 및 내부 품질 평가 후보로 둔다. 현재 모델 카드 기준 비상업적 연구/평가용 라이선스이므로, 서버형 공개 웹 서비스에 모델을 내장해서 제공하지 않는다.
+- 나중에 웹에 올리는 경우에도 PiD 같은 제한 라이선스 모델은 서비스 서버에서 직접 실행하지 않고, 사용자가 본인 PC에 ComfyUI/모델을 설치한 뒤 클라이언트 또는 로컬 엔드포인트로 연결하는 방식을 우선 검토한다.
+- 상용/공개 배포가 필요한 업스케일 기능은 라이선스가 명확한 별도 ComfyUI 업스케일러 또는 API 제공자를 기본값으로 둔다.
+- 개인 로컬 사용에서는 AI_Generator 자체 FastAPI의 `/api/upscale`로 crop 결과를 `outputs/{project}/upscaled/`에 저장한다. PiD 런타임은 `LOCAL_UPSCALE_ENDPOINT=http://127.0.0.1:.../upscale` 또는 프로젝트 `upscale.endpoint`로 연결하는 로컬 HTTP 엔진(`pid-http`)을 우선 지원한다.
+- PiD HTTP runner는 `POST` JSON 계약을 지원해야 한다. Health probe는 `{ "probe": true, "contract": "ai-generator-upscale-v1", "inputPath": "", "outputPath": "", "scale": 2 }`를 보내며, 실제 실행은 `{ "contract": "ai-generator-upscale-v1", "inputPath": "...", "outputPath": "...", "scale": 2, "engine": "pid-http" }`를 보낸다. runner는 이미지 응답, `imageBase64`, `outputPath`, 또는 지정된 `outputPath` 파일 생성을 반환할 수 있다.
+- `pid`/`pid-http` 업스케일 결과는 R2 업로드를 기본 차단한다. 정말 업로드해야 할 때만 프로젝트 `upscale.allowRestrictedUpload=true` 또는 `ALLOW_RESTRICTED_UPSCALE_UPLOAD=1`로 명시 허용한다.
+- 자체 웹서버는 기본적으로 `127.0.0.1:8000`에 바인딩한다. 외부 기기에서 접속해야 할 때만 `AI_GENERATOR_HOST=0.0.0.0`처럼 명시적으로 연다.
 
 ---
 
@@ -170,6 +200,11 @@ python app.py
 | 프롬프트 CSV | `AI_Generator/kemi/prompts/` | 웹 UI에서 편집 가능 |
 | R2 업로드 설정 | `.env` 파일 | 플레이스홀더 → 실제 키로 교체 필요 |
 | 워크플로우 | `workflow_api.json` | ComfyUI 노드 구성 |
+
+다른 프로젝트 연결 기준:
+
+- [Project Integration Contract](docs/project-integration-contract.md)
+- [Project Setup Responsibilities](docs/project-setup-responsibilities.md)
 
 ---
 

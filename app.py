@@ -9,7 +9,8 @@ import random
 import shutil
 import threading
 import time
-from datetime import datetime
+import io
+from datetime import datetime, timedelta
 import pandas as pd
 from fastapi import FastAPI, Form, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +22,7 @@ from botocore.config import Config
 from dotenv import load_dotenv
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ComfyUI-Batch")
@@ -36,6 +38,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 PROMPTS_DIR = os.path.join(BASE_DIR, "kemi", "prompts")
 WORKFLOW_PATH = os.path.join(BASE_DIR, "workflow_api.json")
+COMFY_MODELS = "D:/Projects/ComfyUI/models"
 PROJECTS_DIR = os.path.join(BASE_DIR, "projects")
 TEMPLATES_DIR = os.path.join(PROJECTS_DIR, "templates")
 
@@ -45,13 +48,23 @@ os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
 SUPPORTED_PROVIDERS = {"comfyui", "api-image"}
+RESTRICTED_UPSCALE_ENGINES = {"pid", "pid-http"}
+MAX_UPSCALE_UPLOAD_BYTES = int(os.getenv("MAX_UPSCALE_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+MAX_UPSCALE_UPLOAD_PIXELS = int(os.getenv("MAX_UPSCALE_UPLOAD_PIXELS", str(48_000_000)))
+UPSCALE_JOB_TTL_SECONDS = int(os.getenv("UPSCALE_JOB_TTL_SECONDS", str(6 * 60 * 60)))
 RUN_STORE_LOCK = threading.RLock()
 START_BATCH_LOCK = threading.Lock()
+UPSCALE_JOB_LOCK = threading.RLock()
+UPSCALE_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
 # --- Helpers ---
 def validate_filename(filename: str) -> bool:
     return '..' not in filename and '/' not in filename and '\\' not in filename
+
+
+def validate_project_id(project: str) -> bool:
+    return bool(project) and validate_filename(project)
 
 
 def validate_relative_path(path: str) -> bool:
@@ -101,10 +114,13 @@ def _legacy_kemi_project() -> Dict[str, Any]:
         "id": "kemi",
         "name": "Kemi (Legacy)",
         "sourceDir": os.path.join(BASE_DIR, "kemi"),
+        "imageRequestsFile": "",
+        "promptsFile": "",
         "promptsDir": PROMPTS_DIR,
         "defaultPromptFile": "thumbnail-prompts.csv",
         "referenceAssetsDir": "",
         "crops": {},
+        "outputProfiles": {},
         "generation": {
             "aspectRatio": "16:9",
             "style": "",
@@ -126,6 +142,8 @@ def _legacy_kemi_project() -> Dict[str, Any]:
 
 
 def load_project_config(project: str = "kemi") -> Dict[str, Any]:
+    if not validate_project_id(project):
+        raise HTTPException(status_code=400, detail="Invalid project")
     if project == "kemi":
         return _legacy_kemi_project()
 
@@ -137,17 +155,24 @@ def load_project_config(project: str = "kemi") -> Dict[str, Any]:
         data = json.load(f)
 
     prompts_file = data.get("promptsFile", "")
-    prompts_dir = os.path.dirname(prompts_file) if prompts_file else PROMPTS_DIR
-    default_prompt_file = os.path.basename(prompts_file) if prompts_file else ""
+    image_requests_file = data.get("imageRequestsFile", "") or prompts_file
+    prompt_source_file = image_requests_file or prompts_file
+    prompts_dir = os.path.dirname(prompt_source_file) if prompt_source_file else PROMPTS_DIR
+    default_prompt_file = os.path.basename(prompt_source_file) if prompt_source_file else ""
+    output_profiles = data.get("outputProfiles", data.get("crops", {}))
+    crops = data.get("crops", output_profiles)
 
     return {
         "id": project,
         "name": data.get("name", project),
         "sourceDir": data.get("sourceDir", ""),
+        "imageRequestsFile": image_requests_file,
+        "promptsFile": prompts_file,
         "promptsDir": prompts_dir,
         "defaultPromptFile": default_prompt_file,
         "referenceAssetsDir": data.get("referenceAssetsDir", ""),
-        "crops": data.get("crops", {}),
+        "crops": crops,
+        "outputProfiles": output_profiles,
         "generation": data.get("generation", {}),
         "provider": data.get("provider", "comfyui"),
         "supportedProviders": data.get("supportedProviders", [data.get("provider", "comfyui")]),
@@ -193,8 +218,11 @@ def serialize_project_descriptor(config: Dict[str, Any]) -> Dict[str, Any]:
         "id": config["id"],
         "name": config["name"],
         "sourceDir": config.get("sourceDir", ""),
+        "imageRequestsFile": config.get("imageRequestsFile", ""),
+        "promptsFile": config.get("promptsFile", ""),
         "defaultPromptFile": config.get("defaultPromptFile", ""),
         "referenceAssetsDir": config.get("referenceAssetsDir", ""),
+        "outputProfiles": config.get("outputProfiles", config.get("crops", {})),
         "generation": config.get("generation", {}),
         "provider": provider_id,
         "providerInfo": provider_info,
@@ -365,7 +393,34 @@ def make_result_entry(desc, t, prompt_text, final_positive, final_negative, widt
         "duration": duration
     }
     if row:
-        for key in ("_source_id", "_subject_key", "_result_index", "_category", "_target_crops", "_project", "_reference_assets"):
+        for key in (
+            "_source_id",
+            "_request_id",
+            "_content_type",
+            "_content_id",
+            "_asset_kind",
+            "_style_preset",
+            "_alt",
+            "_negative_prompt",
+            "_provider_params",
+            "_target_storage",
+            "_target_storage_key_prefix",
+            "_review_policy",
+            "_priority",
+            "_metadata",
+            "_slots",
+            "_request_status",
+            "_regenerate_of",
+            "_failure_policy",
+            "_batch_idx",
+            "_actual_seed",
+            "_subject_key",
+            "_result_index",
+            "_category",
+            "_target_crops",
+            "_project",
+            "_reference_assets",
+        ):
             if key in row:
                 entry[key] = row[key]
     return entry
@@ -413,6 +468,54 @@ def write_json_atomic(path: str, payload: Dict[str, Any]) -> None:
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     os.replace(temp_path, path)
+
+
+def sanitize_asset_filename(value: str, fallback: str = "asset") -> str:
+    base = os.path.basename(str(value or "").strip())
+    stem, ext = os.path.splitext(base)
+    stem = re.sub(r"[^a-zA-Z0-9._-]", "-", stem).strip("-._")
+    stem = re.sub(r"-+", "-", stem) or fallback
+    ext = ext.lower() if ext.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+    return f"{stem}{ext}"
+
+
+def read_image_size(path: str) -> Tuple[int, int]:
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            return int(img.width), int(img.height)
+    except Exception:
+        return 0, 0
+
+
+def get_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def get_list(value: Any) -> List[Any]:
+    return value if isinstance(value, list) else []
+
+
+def is_allowed_codex_import_source(source_path: str) -> bool:
+    configured_roots = [
+        part.strip()
+        for part in os.getenv("CODEX_IMPORT_ALLOWED_ROOTS", "").split(os.pathsep)
+        if part.strip()
+    ]
+    default_roots = [
+        os.path.join(os.path.expanduser("~"), ".codex", "generated_images"),
+        os.path.join(BASE_DIR, "imports"),
+    ]
+    allowed_roots = configured_roots or default_roots
+    source_real = os.path.realpath(source_path)
+    for root in allowed_roots:
+        try:
+            root_real = os.path.realpath(root)
+            if os.path.commonpath([source_real, root_real]) == root_real:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 # --- Global State ---
@@ -962,6 +1065,7 @@ def build_run_review_summary(record: Dict[str, Any]) -> Dict[str, Any]:
     results = record.get("results") or []
     approved = sum(1 for item in results if item.get("review_status") == "approved")
     rejected = sum(1 for item in results if item.get("review_status") == "rejected")
+    revision_requested = sum(1 for item in results if item.get("review_status") == "revision_requested")
     pending = sum(1 for item in results if item.get("review_status", "pending") == "pending")
     note_highlights: List[str] = []
     for item in results:
@@ -973,6 +1077,7 @@ def build_run_review_summary(record: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "approved": approved,
         "rejected": rejected,
+        "revisionRequested": revision_requested,
         "pending": pending,
         "noted": sum(1 for item in results if str(item.get("review_note", "") or "").strip()),
         "noteHighlights": note_highlights,
@@ -1360,7 +1465,7 @@ async def read_index():
 
 
 @app.get("/api/health")
-async def health_check():
+async def health_check(project: str = "mbti"):
     provider_statuses: Dict[str, Any] = {}
     overall_ok = True
     for provider_id in sorted(PROVIDER_REGISTRY.keys()):
@@ -1382,6 +1487,7 @@ async def health_check():
         "status": "ok" if overall_ok else "degraded",
         "comfyui": comfyui_ready,
         "providers": provider_statuses,
+        "upscale": await get_upscale_health(project),
     }
 
 
@@ -1544,19 +1650,39 @@ def _load_json_prompts(filepath: str, filename: str, project: str):
         items = json.load(f)
     prompts = []
     for i, item in enumerate(items):
+        provider_params = item.get("providerParams", {}) if isinstance(item.get("providerParams", {}), dict) else {}
+        target_storage = item.get("targetStorage", {}) if isinstance(item.get("targetStorage", {}), dict) else {}
+        slots = item.get("slots", item.get("targetCrops", []))
         prompts.append({
             "id": i,
-            "desc_ko": item.get("name", ""),
+            "desc_ko": item.get("name", item.get("resultName", item.get("altText", item.get("contentId", "")))),
             "prompt": item.get("prompt", ""),
-            "aspect_ratio": "1:1",
+            "aspect_ratio": provider_params.get("aspectRatio", item.get("aspectRatio", "1:1")),
             "extra_positive": item.get("style", ""),
-            "extra_negative": "",
-            "seed": "",
+            "extra_negative": item.get("negativePrompt", ""),
+            "seed": provider_params.get("seed", item.get("seed", "")) or "",
             "_source_id": item.get("id", ""),
+            "_request_id": item.get("requestId", item.get("id", "")),
+            "_content_type": item.get("contentType", "result" if item.get("subjectKey") else ""),
+            "_content_id": item.get("contentId", item.get("id", "")),
+            "_asset_kind": item.get("assetKind", item.get("kind", item.get("type", ""))),
+            "_style_preset": item.get("stylePreset", item.get("style", "")),
+            "_alt": item.get("altText", item.get("description", item.get("name", ""))),
+            "_negative_prompt": item.get("negativePrompt", ""),
+            "_provider_params": provider_params,
+            "_target_storage": target_storage,
+            "_target_storage_key_prefix": target_storage.get("keyPrefix", ""),
+            "_review_policy": item.get("reviewPolicy", {}),
+            "_priority": item.get("priority", ""),
+            "_metadata": item.get("metadata", {}),
+            "_slots": slots,
+            "_request_status": item.get("requestStatus", ""),
+            "_regenerate_of": item.get("regenerateOf", None),
+            "_failure_policy": item.get("failurePolicy", ""),
             "_subject_key": item.get("subjectKey", ""),
             "_result_index": item.get("resultIndex", 0),
             "_category": item.get("category", ""),
-            "_target_crops": item.get("targetCrops", []),
+            "_target_crops": slots,
             "_project": item.get("project", "") or project,
         })
     return {"project": project, "filename": filename, "prompts": prompts, "source": "json"}
@@ -1571,6 +1697,8 @@ async def save_prompts(filename: str = Form(...), content: str = Form(...), proj
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return {"status": "saved", "project": project}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -1629,6 +1757,163 @@ async def list_runs(project: str = "kemi", limit: int = 10):
     }
 
 
+@app.post("/api/codex-import")
+async def import_codex_images(body: dict):
+    project = str(body.get("project", "kemi") or "kemi")
+    load_project_config(project)
+    raw_images = body.get("images", [])
+    if not isinstance(raw_images, list) or not raw_images:
+        raise HTTPException(status_code=400, detail="No images to import")
+
+    run_id = str(body.get("run_id") or "") or f"codex-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    run_name = str(body.get("run_name", "Codex import") or "Codex import")
+    if os.path.exists(resolve_run_file(project, run_id)) and not bool(body.get("allow_overwrite")):
+        raise HTTPException(status_code=409, detail=f"Run already exists: {run_id}")
+    source_dir = os.path.join(resolve_project_output_dir(project), "source")
+    os.makedirs(source_dir, exist_ok=True)
+
+    results: List[Dict[str, Any]] = []
+    logs: List[str] = []
+    for index, image in enumerate(raw_images):
+        if not isinstance(image, dict):
+            continue
+        source_path = os.path.abspath(str(image.get("source_path", "") or ""))
+        if not os.path.exists(source_path) or not os.path.isfile(source_path):
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR Missing Codex image: {image.get('source_path', '')}")
+            continue
+        if not is_allowed_codex_import_source(source_path):
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR Source path is outside allowed import roots: {source_path}")
+            continue
+        ext = os.path.splitext(source_path)[1].lower()
+        if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR Unsupported image type: {source_path}")
+            continue
+
+        request_id = str(image.get("request_id", "") or "") or f"{run_id}-{index + 1}"
+        safe_base = sanitize_asset_filename(request_id, fallback=f"codex-{index + 1}")
+        stem, clean_ext = os.path.splitext(safe_base)
+        file_name = f"{stem}_{uuid.uuid4().hex[:8]}{clean_ext}"
+        dest_path = os.path.join(source_dir, file_name)
+        shutil.copy2(source_path, dest_path)
+        width, height = read_image_size(dest_path)
+        if not width or not height:
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ERROR Imported file is not a readable image: {source_path}")
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+            continue
+
+        provider_params = get_dict(image.get("provider_params"))
+        target_storage = get_dict(image.get("target_storage"))
+        review_policy = get_dict(image.get("review_policy"))
+        metadata = get_dict(image.get("metadata"))
+        slots = get_list(image.get("slots")) or ["result-card", "share-og"]
+
+        row = {
+            "_request_id": request_id,
+            "_content_type": image.get("content_type", "result"),
+            "_content_id": image.get("content_id", ""),
+            "_asset_kind": image.get("asset_kind", "result-artwork"),
+            "_style_preset": image.get("style_preset", "codex-generated"),
+            "_alt": image.get("alt_text", ""),
+            "_negative_prompt": image.get("negative_prompt", ""),
+            "_provider_params": {
+                **provider_params,
+                "sourceProvider": "codex",
+            },
+            "_target_storage": target_storage,
+            "_target_storage_key_prefix": target_storage.get("keyPrefix", ""),
+            "_review_policy": review_policy,
+            "_category": image.get("category", image.get("content_type", "")),
+            "_metadata": {
+                **metadata,
+                "sourceProvider": "codex",
+                "importedSourcePath": source_path,
+                "importRunName": run_name,
+            },
+            "_slots": slots,
+            "_target_crops": slots,
+            "_request_status": "generated",
+            "_batch_idx": index + 1,
+            "_project": project,
+            "_reference_assets": [],
+        }
+        result = make_result_entry(
+            image.get("alt_text", "") or image.get("content_id", "") or request_id,
+            "source",
+            image.get("prompt", ""),
+            image.get("prompt", ""),
+            image.get("negative_prompt", ""),
+            width,
+            height,
+            url=f"/outputs/{project}/source/{file_name}",
+            local_path=dest_path,
+            status="success",
+            duration=0,
+            row=row,
+        )
+        result["source_provider"] = "codex"
+        result["review_status"] = "pending"
+        results.append(result)
+        logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] OK Imported Codex image: {request_id}")
+
+    if not results:
+        raise HTTPException(status_code=400, detail="No valid images were imported")
+
+    now = datetime.now().isoformat()
+    request_summary = {
+        "requestId": str(uuid.uuid4()),
+        "projectId": project,
+        "mode": "codex-import",
+        "providerId": "codex",
+        "operatorMode": "codex",
+        "templateId": None,
+        "sceneSpec": None,
+        "promptSource": "codex-import",
+        "prompts": summarize_prompt_rows(results),
+        "referenceAssets": [],
+        "outputTypes": ["source"],
+        "generationParams": {},
+        "metadata": {
+            "runName": run_name,
+            "sourceProvider": "codex",
+        },
+    }
+    record = {
+        "runId": run_id,
+        "projectId": project,
+        "mode": "codex-import",
+        "providerId": "codex",
+        "request": request_summary,
+        "status": {
+            "is_running": False,
+            "cancel_requested": False,
+            "finish_status": "imported",
+            "total": len(results),
+            "completed": len(results),
+            "succeeded": len(results),
+            "warnings": 0,
+            "errors": 0,
+            "current_item": f"Imported {len(results)} Codex image(s)",
+        },
+        "referenceAssets": [],
+        "results": results,
+        "logs": logs,
+        "timing": {"batch_start": None, "image_durations": []},
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    save_run_record(project, run_id, record)
+    return {
+        "status": "imported",
+        "project": project,
+        "runId": run_id,
+        "count": len(results),
+        "results": results,
+    }
+
+
 @app.post("/api/batch/cancel")
 async def cancel_batch():
     if not batch_status["is_running"]:
@@ -1642,7 +1927,7 @@ async def cancel_batch():
 @app.post("/api/results/{index}/review")
 async def review_result(index: int, body: dict, project: str = "kemi", run_id: str = ""):
     review_status = body.get("status", "pending")
-    if review_status not in ("approved", "rejected", "pending"):
+    if review_status not in ("approved", "rejected", "revision_requested", "pending"):
         raise HTTPException(status_code=400, detail="Invalid status")
     review_note = str(body.get("note", "") or "").strip()
 
@@ -1679,6 +1964,47 @@ async def review_result(index: int, body: dict, project: str = "kemi", run_id: s
         "review_status": review_status,
         "review_note": batch_status["results"][index]["review_note"],
     }
+
+
+@app.post("/api/results/{index}/upscale-version")
+async def select_upscale_version(index: int, body: dict, project: str = "kemi", run_id: str = ""):
+    source_key = str(body.get("sourceKey") or body.get("source") or "source").strip() or "source"
+    version_id = str(body.get("versionId") or "").strip()
+    if not version_id:
+        raise HTTPException(status_code=400, detail="versionId is required")
+
+    def _select(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if index < 0 or index >= len(results):
+            raise HTTPException(status_code=404, detail="Result not found")
+        result = results[index]
+        history = result.get("_upscale_history") or []
+        selected = None
+        for item in history:
+            item_source = str(item.get("sourceKey") or item.get("source") or "source")
+            if item.get("versionId") == version_id and item_source == source_key:
+                selected = item
+                break
+        if not selected:
+            raise HTTPException(status_code=404, detail="Upscale version not found")
+        result.setdefault("_upscaled", {})[source_key] = selected
+        return selected
+
+    if run_id:
+        record = load_run_record(project, run_id)
+        if record.get("projectId") != project:
+            raise HTTPException(status_code=400, detail="Run project does not match project")
+        selected = _select(record.get("results", []))
+        record.setdefault("logs", []).append(
+            f"[{datetime.now().strftime('%H:%M:%S')}] OK Selected upscale version {version_id} for {source_key}"
+        )
+        save_run_record(project, run_id, record)
+        return {"status": "updated", "index": index, "sourceKey": source_key, "versionId": version_id, "upscaled": selected}
+
+    if batch_status.get("project") != project:
+        raise HTTPException(status_code=400, detail="Active run project does not match project")
+    selected = _select(batch_status["results"])
+    persist_current_run()
+    return {"status": "updated", "index": index, "sourceKey": source_key, "versionId": version_id, "upscaled": selected}
 
 
 # --- Model Discovery ---
@@ -1732,6 +2058,7 @@ class GenConfig:
     target_vae: str
     steps: int
     global_aspect_ratio: str
+    workflow_name: str = 'z_image_turbo.json'
 
 
 @dataclass
@@ -1793,6 +2120,7 @@ class GenerationProviderAdapter:
         negative_prompt: str,
         steps: int,
         global_aspect_ratio: str,
+        workflow_name: str = 'z_image_turbo.json',
     ) -> ProviderRuntime:
         raise NotImplementedError
 
@@ -1807,8 +2135,11 @@ class GenerationProviderAdapter:
         return None
 
 
-def load_comfyui_workflow_template() -> Dict[str, Any]:
-    with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
+def load_comfyui_workflow_template(workflow_name: str = "z_image_turbo.json") -> Dict[str, Any]:
+    path = os.path.join(BASE_DIR, "workflows", workflow_name)
+    if not os.path.exists(path):
+        path = WORKFLOW_PATH
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -1861,8 +2192,9 @@ class ComfyUIProviderAdapter(GenerationProviderAdapter):
         negative_prompt: str,
         steps: int,
         global_aspect_ratio: str,
+        workflow_name: str = 'z_image_turbo.json',
     ) -> ComfyUIProviderRuntime:
-        workflow_template = load_comfyui_workflow_template()
+        workflow_template = load_comfyui_workflow_template(workflow_name)
         session = aiohttp.ClientSession()
         try:
             target_unet, target_clip, target_vae = await discover_models(session)
@@ -1887,6 +2219,7 @@ class ComfyUIProviderAdapter(GenerationProviderAdapter):
                 target_vae=target_vae,
                 steps=steps,
                 global_aspect_ratio=global_aspect_ratio,
+                workflow_name=workflow_name,
             ),
         )
 
@@ -2133,6 +2466,7 @@ class ApiImageProviderAdapter(GenerationProviderAdapter):
         negative_prompt: str,
         steps: int,
         global_aspect_ratio: str,
+        workflow_name: str = 'z_image_turbo.json',
     ) -> ApiImageProviderRuntime:
         if not self.is_configured():
             raise RuntimeError(self.configuration_error())
@@ -2315,17 +2649,43 @@ def build_effective_project_capabilities(config: Dict[str, Any], provider_id: st
 
 
 # --- Core Generation ---
+
+def find_node_by_class(workflow: dict, class_types: list) -> str:
+    for k, v in workflow.items():
+        if isinstance(v, dict) and v.get("class_type") in class_types:
+            return k
+    return None
+
+def find_positive_negative_nodes(workflow: dict, ksampler_id: str):
+    if not ksampler_id: return None, None
+    ksampler = workflow.get(ksampler_id, {})
+    inputs = ksampler.get("inputs", {})
+    pos_id = inputs.get("positive", [None])[0]
+    neg_id = inputs.get("negative", [None])[0]
+    return pos_id, neg_id
+
+def find_latent_node(workflow: dict, ksampler_id: str) -> str:
+    if not ksampler_id: return None
+    return workflow.get(ksampler_id, {}).get("inputs", {}).get("latent_image", [None])[0]
+
 async def generate_single_image(session, config: GenConfig, prompt_text, desc, t, row, batch_idx=0):
+
     """Generate a single image. Returns (success: bool, result_entry: dict)"""
     start_time = time.time()
 
     workflow = json.loads(json.dumps(config.workflow_template))
 
-    # Steps
-    if NODE_KSAMPLER in workflow:
-        workflow[NODE_KSAMPLER]["inputs"]["steps"] = config.steps
+    node_ksampler = find_node_by_class(workflow, ["KSampler", "SamplerCustom"])
+    node_unet = find_node_by_class(workflow, ["UNETLoader", "CheckpointLoaderSimple"])
+    node_clip = find_node_by_class(workflow, ["CLIPLoader", "DualCLIPLoader"])
+    node_vae = find_node_by_class(workflow, ["VAELoader"])
 
-    # Aspect ratio
+    node_pos, node_neg = find_positive_negative_nodes(workflow, node_ksampler)
+    node_latent = find_latent_node(workflow, node_ksampler)
+
+    if node_ksampler and "steps" in workflow[node_ksampler]["inputs"]:
+        workflow[node_ksampler]["inputs"]["steps"] = config.steps
+
     ar_str = str(row.get('aspect_ratio', '')).strip()
     if not ar_str or ar_str.lower() == "nan" or ar_str == "None":
         ar_str = config.global_aspect_ratio
@@ -2334,32 +2694,55 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
         width //= 2
         height //= 2
 
-    # Models
-    if NODE_UNET in workflow:
-        workflow[NODE_UNET]["inputs"]["unet_name"] = config.target_unet
-    if NODE_CLIP in workflow:
-        workflow[NODE_CLIP]["inputs"]["clip_name"] = config.target_clip
-    if NODE_VAE in workflow:
-        workflow[NODE_VAE]["inputs"]["vae_name"] = config.target_vae
+    if node_unet and config.target_unet:
+        if "unet_name" in workflow[node_unet]["inputs"]:
+            workflow[node_unet]["inputs"]["unet_name"] = config.target_unet
+        elif "ckpt_name" in workflow[node_unet]["inputs"]:
+            workflow[node_unet]["inputs"]["ckpt_name"] = config.target_unet
 
-    # Dimensions
-    workflow[NODE_LATENT]["inputs"]["width"] = width
-    workflow[NODE_LATENT]["inputs"]["height"] = height
+    if node_clip and config.target_clip:
+        if "clip_name" in workflow[node_clip]["inputs"]:
+            workflow[node_clip]["inputs"]["clip_name"] = config.target_clip
 
-    # Prompts
+    if node_vae and config.target_vae:
+        if "vae_name" in workflow[node_vae]["inputs"]:
+            workflow[node_vae]["inputs"]["vae_name"] = config.target_vae
+
+    if node_latent and "width" in workflow[node_latent]["inputs"]:
+        workflow[node_latent]["inputs"]["width"] = width
+        workflow[node_latent]["inputs"]["height"] = height
+
     raw_positive = f"{prompt_text}, {row.get('extra_positive', '')}, {config.style_prompt}"
     raw_negative = f"{config.negative_prompt}, {row.get('extra_negative', '')}"
     final_positive = process_wildcards(raw_positive)
     final_negative = process_wildcards(raw_negative)
-    workflow[NODE_POSITIVE]["inputs"]["text"] = final_positive
-    workflow[NODE_NEGATIVE]["inputs"]["text"] = final_negative
 
-    # Seed
-    try:
-        custom_seed = int(row.get('seed', 0))
-        workflow[NODE_KSAMPLER]["inputs"]["seed"] = custom_seed if custom_seed > 0 else uuid.uuid4().int >> 96
-    except (ValueError, TypeError):
-        workflow[NODE_KSAMPLER]["inputs"]["seed"] = uuid.uuid4().int >> 96
+    if node_pos and "text" in workflow[node_pos]["inputs"]:
+        workflow[node_pos]["inputs"]["text"] = final_positive
+    if node_neg and "text" in workflow[node_neg]["inputs"]:
+        workflow[node_neg]["inputs"]["text"] = final_negative
+
+    if node_ksampler and "seed" in workflow[node_ksampler]["inputs"]:
+        try:
+            custom_seed = int(row.get('seed', 0))
+            actual_seed = custom_seed if custom_seed > 0 else uuid.uuid4().int >> 96
+            workflow[node_ksampler]["inputs"]["seed"] = actual_seed
+            row["_actual_seed"] = actual_seed
+        except (ValueError, TypeError):
+            actual_seed = uuid.uuid4().int >> 96
+            workflow[node_ksampler]["inputs"]["seed"] = actual_seed
+            row["_actual_seed"] = actual_seed
+    elif node_ksampler and "noise_seed" in workflow[node_ksampler]["inputs"]:
+        try:
+            custom_seed = int(row.get('seed', 0))
+            actual_seed = custom_seed if custom_seed > 0 else uuid.uuid4().int >> 96
+            workflow[node_ksampler]["inputs"]["noise_seed"] = actual_seed
+            row["_actual_seed"] = actual_seed
+        except (ValueError, TypeError):
+            actual_seed = uuid.uuid4().int >> 96
+            workflow[node_ksampler]["inputs"]["noise_seed"] = actual_seed
+            row["_actual_seed"] = actual_seed
+
 
     # Submit to ComfyUI
     p = {"prompt": workflow, "client_id": CLIENT_ID}
@@ -2487,7 +2870,7 @@ async def run_kemi_batch(project, selected_prompts, types, style_prompt="", nega
                             prompt_text=row.get('prompt', ''),
                             desc=desc,
                             output_type=t,
-                            row=row,
+                            row={**row, "_batch_idx": i},
                             batch_idx=i,
                         ),
                     )
@@ -2599,6 +2982,48 @@ class StartBatchRequest(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class CodexImportImagePayload(BaseModel):
+    source_path: str
+    request_id: str = ""
+    content_type: str = "result"
+    content_id: str = ""
+    asset_kind: str = "result-artwork"
+    slots: List[str] = Field(default_factory=lambda: ["result-card", "share-og"])
+    prompt: str = ""
+    negative_prompt: str = ""
+    style_preset: str = "codex-generated"
+    alt_text: str = ""
+    target_storage: Dict[str, Any] = Field(default_factory=dict)
+    provider_params: Dict[str, Any] = Field(default_factory=dict)
+    review_policy: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CodexImportRequest(BaseModel):
+    project: str = "kemi"
+    run_id: Optional[str] = None
+    run_name: str = "Codex import"
+    images: List[CodexImportImagePayload] = Field(default_factory=list)
+
+
+class UpscaleRequest(BaseModel):
+    project: str = "mbti"
+    run_id: Optional[str] = ""
+    source: str = "crops"
+    scale: int = 2
+    engine: str = ""
+    crop_names: List[str] = Field(default_factory=list)
+
+
+class UpscaleCleanupRequest(BaseModel):
+    project: str = "mbti"
+    older_than_days: int = 7
+    dry_run: bool = True
+    include_inputs: bool = True
+    include_upscaled: bool = True
+    keep_referenced: bool = True
+
+
 class SceneTemplatePayload(BaseModel):
     id: Optional[str] = None
     name: str
@@ -2645,10 +3070,13 @@ def resolve_provider_id(project: str, requested_provider_id: Optional[str] = Non
 
 def normalize_output_types(req: "StartBatchRequest") -> List[str]:
     requested_types = req.types or (req.scene_spec.outputs if req.scene_spec else []) or ["thumb", "hero"]
+    project_config = load_project_config(req.project)
+    output_profiles = project_config.get("outputProfiles", project_config.get("crops", {})) or {}
+    allowed_types = {"source", "thumb", "hero", *output_profiles.keys()}
     normalized: List[str] = []
     for item in requested_types:
         value = str(item or "").strip().lower()
-        if value in {"thumb", "hero"} and value not in normalized:
+        if value in allowed_types and value not in normalized:
             normalized.append(value)
     return normalized
 
@@ -2953,9 +3381,53 @@ def build_preflight_validation(req: StartBatchRequest) -> Dict[str, Any]:
     }
 
 
+def normalize_direct_prompt_row(item: Dict[str, Any], project: str) -> Dict[str, Any]:
+    if any(key.startswith("_") for key in item.keys()):
+        item.setdefault("_project", project)
+        return item
+
+    provider_params = item.get("providerParams", {}) if isinstance(item.get("providerParams", {}), dict) else {}
+    target_storage = item.get("targetStorage", {}) if isinstance(item.get("targetStorage", {}), dict) else {}
+    slots = item.get("slots", item.get("targetCrops", []))
+    normalized = dict(item)
+    normalized.update({
+        "desc_ko": item.get("desc_ko", item.get("name", item.get("resultName", item.get("altText", item.get("contentId", ""))))),
+        "prompt": item.get("prompt", ""),
+        "aspect_ratio": item.get("aspect_ratio", provider_params.get("aspectRatio", item.get("aspectRatio", "1:1"))),
+        "extra_positive": item.get("extra_positive", item.get("style", "")),
+        "extra_negative": item.get("extra_negative", item.get("negativePrompt", "")),
+        "seed": item.get("seed", provider_params.get("seed", "")) or "",
+        "_source_id": item.get("id", item.get("source_id", "")),
+        "_request_id": item.get("requestId", item.get("id", "")),
+        "_content_type": item.get("contentType", "result" if item.get("subjectKey") else ""),
+        "_content_id": item.get("contentId", item.get("id", "")),
+        "_asset_kind": item.get("assetKind", item.get("kind", item.get("type", ""))),
+        "_style_preset": item.get("stylePreset", item.get("style", "")),
+        "_alt": item.get("altText", item.get("description", item.get("name", ""))),
+        "_negative_prompt": item.get("negativePrompt", ""),
+        "_provider_params": provider_params,
+        "_target_storage": target_storage,
+        "_target_storage_key_prefix": target_storage.get("keyPrefix", ""),
+        "_review_policy": item.get("reviewPolicy", {}),
+        "_priority": item.get("priority", ""),
+        "_metadata": item.get("metadata", {}),
+        "_slots": slots,
+        "_request_status": item.get("requestStatus", ""),
+        "_regenerate_of": item.get("regenerateOf", None),
+        "_failure_policy": item.get("failurePolicy", ""),
+        "_subject_key": item.get("subjectKey", ""),
+        "_result_index": item.get("resultIndex", 0),
+        "_category": item.get("category", ""),
+        "_target_crops": slots,
+        "_project": item.get("project", "") or project,
+        "_reference_assets": item.get("referenceAssets", []),
+    })
+    return normalized
+
+
 def normalize_selected_prompts(req: StartBatchRequest) -> List[Dict[str, Any]]:
     mode = (req.mode or "direct").strip().lower()
-    prompts = [dict(prompt) for prompt in req.prompts]
+    prompts = [normalize_direct_prompt_row(dict(prompt), req.project) for prompt in req.prompts]
     if mode == "direct":
         return prompts
 
@@ -3045,7 +3517,116 @@ async def validate_generation(req: StartBatchRequest):
     return build_preflight_validation(req)
 
 
+
+
+import urllib.request
+from fastapi import UploadFile, File
+
+DOWNLOAD_STATE = {"progress": 0, "status": "idle", "filename": ""}
+
+@app.get("/api/system/models")
+async def get_system_models():
+    models_data = []
+    # Check common model directories
+    for subdir in ["checkpoints", "diffusion_models", "unet", "clip", "text_encoders", "vae"]:
+        dir_path = os.path.join(COMFY_MODELS, subdir)
+        if not os.path.exists(dir_path):
+            continue
+        for filename in os.listdir(dir_path):
+            if filename.endswith(".safetensors") or filename.endswith(".ckpt") or filename.endswith(".pt"):
+                file_path = os.path.join(dir_path, filename)
+                size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                models_data.append({
+                    "category": subdir,
+                    "filename": filename,
+                    "path": f"{subdir}/{filename}",
+                    "size_mb": round(size_mb, 2)
+                })
+    return {"models": models_data}
+
+@app.delete("/api/system/models")
+async def delete_model(body: dict):
+    file_path = body.get("path", "")
+    if not file_path or ".." in file_path:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    full_path = os.path.join(COMFY_MODELS, file_path)
+    if os.path.exists(full_path):
+        os.remove(full_path)
+        return {"status": "success"}
+    raise HTTPException(status_code=404, detail="File not found")
+
+@app.post("/api/workflows/upload")
+async def upload_workflow(file: UploadFile = File(...)):
+    workflows_dir = os.path.join(BASE_DIR, "workflows")
+    os.makedirs(workflows_dir, exist_ok=True)
+    if not file.filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only JSON files are allowed")
+    path = os.path.join(workflows_dir, file.filename)
+    with open(path, "wb") as f:
+        f.write(await file.read())
+    return {"status": "success", "filename": file.filename}
+
+@app.delete("/api/workflows/{filename}")
+async def delete_workflow(filename: str):
+    if ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = os.path.join(BASE_DIR, "workflows", filename)
+    if os.path.exists(path):
+        os.remove(path)
+        return {"status": "success"}
+    raise HTTPException(status_code=404, detail="Workflow not found")
+
+def _download_thread(url: str, dest_path: str):
+    global DOWNLOAD_STATE
+    DOWNLOAD_STATE = {"progress": 0, "status": "downloading", "filename": os.path.basename(dest_path)}
+    try:
+        def reporthook(blocknum, blocksize, totalsize):
+            readsofar = blocknum * blocksize
+            if totalsize > 0:
+                percent = readsofar * 1e2 / totalsize
+                DOWNLOAD_STATE["progress"] = min(100.0, percent)
+        urllib.request.urlretrieve(url, dest_path, reporthook)
+        DOWNLOAD_STATE["status"] = "success"
+        DOWNLOAD_STATE["progress"] = 100.0
+    except Exception as e:
+        DOWNLOAD_STATE["status"] = f"error: {str(e)}"
+
+@app.post("/api/system/models/download")
+async def download_model(body: dict):
+    global DOWNLOAD_STATE
+    if DOWNLOAD_STATE["status"] == "downloading":
+        raise HTTPException(status_code=400, detail="A download is already in progress")
+    repo_id = body.get("repo_id")
+    filename = body.get("filename")
+    subdir = body.get("subdir")
+    if not repo_id or not filename or not subdir:
+        raise HTTPException(status_code=400, detail="Missing repo_id, filename, or subdir")
+    url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}?download=true"
+    dest_dir = os.path.join(COMFY_MODELS, subdir)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.join(dest_dir, os.path.basename(filename))
+
+    import threading
+    threading.Thread(target=_download_thread, args=(url, dest_path), daemon=True).start()
+    return {"status": "started"}
+
+@app.get("/api/system/models/download/status")
+async def download_status():
+    return DOWNLOAD_STATE
+
+
+@app.get("/api/workflows")
+async def list_workflows():
+    workflows_dir = os.path.join(BASE_DIR, "workflows")
+    if not os.path.exists(workflows_dir):
+        return {"workflows": ["workflow_api.json"]}
+    files = [f for f in os.listdir(workflows_dir) if f.endswith(".json")]
+    if not files:
+        files = ["workflow_api.json"]
+    return {"workflows": files}
+
 @app.post("/api/batch/start")
+
 async def start_batch(background_tasks: BackgroundTasks, req: StartBatchRequest):
     validate_generation_request(req)
     preflight = build_preflight_validation(req)
@@ -3075,10 +3656,245 @@ async def start_batch(background_tasks: BackgroundTasks, req: StartBatchRequest)
     return {"status": "started", "project": req.project, "runId": run_id, "mode": request_summary["mode"], "providerId": provider_id}
 
 
+def append_suffix_before_ext(path_or_key: str, suffix: str) -> str:
+    base, ext = os.path.splitext(path_or_key)
+    return f"{base}{suffix}{ext or '.webp'}"
+
+
+def sanitize_storage_token(value: str, fallback: str = "item") -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "-", str(value or "")).lower().strip("-")
+    return re.sub(r"-+", "-", safe) or fallback
+
+
+def build_upscale_version_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
+
+
+def build_upscale_output_name(base_name: str, source_key: str, scale: int, engine: str, version_id: str) -> str:
+    safe_base = sanitize_storage_token(base_name, "asset")
+    safe_source = sanitize_storage_token(source_key, "source")
+    safe_engine = sanitize_storage_token(engine, "upscale")
+    safe_version = sanitize_storage_token(version_id, "v")
+    return f"{safe_base}_{safe_source}_{safe_engine}_x{scale}_{safe_version}.webp"
+
+
+def build_upscaled_r2_key(source_key: str, source_name: str, scale: int, engine: str = "", version_id: str = "") -> str:
+    suffix_parts = []
+    if engine:
+        suffix_parts.append(sanitize_storage_token(engine, "upscale"))
+    suffix_parts.append(f"x{scale}")
+    if version_id:
+        suffix_parts.append(sanitize_storage_token(version_id, "v"))
+    suffix = "_" + "_".join(suffix_parts)
+    if source_key:
+        return append_suffix_before_ext(source_key, suffix)
+    safe_name = sanitize_storage_token(source_name, "asset")
+    return f"upscaled/{safe_name}{suffix}.webp"
+
+
+def resolve_upscale_config(project_config: Dict[str, Any], request: UpscaleRequest) -> Dict[str, Any]:
+    config = dict(project_config.get("upscale", {}) or {})
+    engine = (request.engine or config.get("engine") or config.get("provider") or "pillow").strip().lower()
+    config["engine"] = engine
+    config["scale"] = max(1, min(8, int(request.scale or config.get("scale") or 2)))
+    endpoint = str(config.get("endpoint") or os.getenv("LOCAL_UPSCALE_ENDPOINT") or "").strip()
+    if endpoint:
+        config["endpoint"] = endpoint
+    config["timeoutSec"] = max(5, min(3600, int(config.get("timeoutSec") or 300)))
+    return config
+
+
+def is_local_http_endpoint(endpoint: str) -> bool:
+    parsed = urlparse(endpoint.strip())
+    hostname = (parsed.hostname or "").lower()
+    return parsed.scheme == "http" and hostname in {"127.0.0.1", "localhost"}
+
+
+async def get_upscale_health(project: str = "mbti") -> Dict[str, Any]:
+    try:
+        project_config = load_project_config(project)
+    except Exception:
+        project_config = {}
+    pid_config = resolve_upscale_config(project_config, UpscaleRequest(project=project, engine="pid-http"))
+    endpoint = str(pid_config.get("endpoint") or "").strip()
+    pid_available = False
+    pid_reason = ""
+    if not endpoint:
+        pid_reason = "LOCAL_UPSCALE_ENDPOINT or project upscale.endpoint is not configured"
+    elif not is_local_http_endpoint(endpoint):
+        pid_reason = "Upscale endpoint must be localhost or 127.0.0.1"
+    else:
+        try:
+            timeout = aiohttp.ClientTimeout(total=2)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                probe_payload = {
+                    "probe": True,
+                    "contract": "ai-generator-upscale-v1",
+                    "inputPath": "",
+                    "outputPath": "",
+                    "scale": 2,
+                }
+                async with session.post(endpoint, json=probe_payload) as resp:
+                    pid_reason = f"POST probe HTTP {resp.status}"
+                    if 200 <= resp.status < 300:
+                        try:
+                            probe_data = await resp.json(content_type=None)
+                        except Exception:
+                            probe_data = {}
+                        contract_ok = probe_data.get("contract") == "ai-generator-upscale-v1"
+                        status_ok = str(probe_data.get("status") or "ok").lower() in {"ok", "ready", "success"}
+                        pid_available = bool(contract_ok and status_ok)
+                        if not contract_ok:
+                            pid_reason = f"POST probe HTTP {resp.status}: contract mismatch"
+                        elif not status_ok:
+                            pid_reason = f"POST probe HTTP {resp.status}: runner not ready"
+        except Exception as exc:
+            pid_reason = str(exc)
+    return {
+        "pillow": {"engine": "pillow", "available": True, "configured": True, "status": "ok"},
+        "pid-http": {
+            "engine": "pid-http",
+            "available": pid_available,
+            "configured": bool(endpoint) and is_local_http_endpoint(endpoint),
+            "endpoint": endpoint,
+            "status": "ok" if pid_available else "unavailable",
+            "reason": pid_reason,
+            "restrictedUpload": True,
+        },
+    }
+
+
+async def run_pillow_upscale(input_path: str, output_path: str, scale: int) -> Tuple[int, int]:
+    from PIL import Image
+
+    def _resize() -> Tuple[int, int]:
+        with Image.open(input_path) as img:
+            w, h = img.size
+            source = normalize_image_for_webp(img)
+            resized = source.resize((w * scale, h * scale), Image.LANCZOS)
+            resized.save(output_path, "WEBP", quality=92)
+            return resized.size
+
+    return await asyncio.to_thread(_resize)
+
+
+def ensure_upscale_image_limits(width: int, height: int, byte_count: int = 0) -> None:
+    if byte_count > MAX_UPSCALE_UPLOAD_BYTES:
+        raise ValueError(f"Uploaded image is too large. Max {MAX_UPSCALE_UPLOAD_BYTES // (1024 * 1024)}MB")
+    if width <= 0 or height <= 0:
+        raise ValueError("Uploaded image is not readable")
+    if width * height > MAX_UPSCALE_UPLOAD_PIXELS:
+        raise ValueError(f"Uploaded image has too many pixels. Max {MAX_UPSCALE_UPLOAD_PIXELS:,} pixels")
+
+
+def normalize_image_for_webp(img: "Image.Image") -> "Image.Image":
+    has_alpha = img.mode in {"RGBA", "LA"} or (img.mode == "P" and "transparency" in img.info)
+    target_mode = "RGBA" if has_alpha else "RGB"
+    return img.copy() if img.mode == target_mode else img.convert(target_mode)
+
+
+def write_image_bytes_as_webp(image_bytes: bytes, output_path: str) -> Tuple[int, int]:
+    from PIL import Image
+
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        width, height = int(img.width), int(img.height)
+        ensure_upscale_image_limits(width, height, len(image_bytes))
+        converted = normalize_image_for_webp(img)
+    converted.save(output_path, "WEBP", quality=92)
+    return width, height
+
+
+def write_image_file_as_webp(source_path: str, output_path: str) -> Tuple[int, int]:
+    from PIL import Image
+
+    with Image.open(source_path) as img:
+        width, height = int(img.width), int(img.height)
+        ensure_upscale_image_limits(width, height)
+        converted = normalize_image_for_webp(img)
+    converted.save(output_path, "WEBP", quality=92)
+    return width, height
+
+
+async def run_external_http_upscale(input_path: str, output_path: str, scale: int, config: Dict[str, Any]) -> Tuple[int, int]:
+    endpoint = str(config.get("endpoint") or "").strip()
+    if not endpoint:
+        raise RuntimeError("External upscale endpoint is not configured")
+    if not is_local_http_endpoint(endpoint):
+        raise RuntimeError("External upscale endpoint must be localhost or 127.0.0.1")
+
+    timeout = aiohttp.ClientTimeout(total=int(config.get("timeoutSec") or 300))
+    payload = {
+        "contract": "ai-generator-upscale-v1",
+        "inputPath": input_path,
+        "outputPath": output_path,
+        "scale": scale,
+        "engine": config.get("engine", "external-http"),
+    }
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(endpoint, json=payload) as resp:
+            content_type = resp.headers.get("content-type", "")
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RuntimeError(body[:500] or f"External upscale failed with HTTP {resp.status}")
+            if content_type.startswith("image/"):
+                return await asyncio.to_thread(write_image_bytes_as_webp, await resp.read(), output_path)
+            else:
+                data = await resp.json()
+                if data.get("imageBase64"):
+                    return await asyncio.to_thread(write_image_bytes_as_webp, base64.b64decode(data["imageBase64"]), output_path)
+                elif data.get("outputPath"):
+                    returned_path = os.path.abspath(str(data["outputPath"]))
+                    expected_path = os.path.abspath(output_path)
+                    if returned_path != expected_path:
+                        raise RuntimeError("External upscale outputPath must match the requested outputPath")
+                    if os.path.exists(returned_path):
+                        return await asyncio.to_thread(write_image_file_as_webp, returned_path, output_path)
+                elif not os.path.exists(output_path):
+                    raise RuntimeError("External upscale response did not produce an output image")
+
+    return await asyncio.to_thread(write_image_file_as_webp, output_path, output_path)
+
+
+async def upscale_image_file(input_path: str, output_path: str, scale: int, config: Dict[str, Any]) -> Tuple[int, int]:
+    engine = str(config.get("engine") or "pillow").lower()
+    if engine in ("pillow", "local-pillow", "lanczos"):
+        return await run_pillow_upscale(input_path, output_path, scale)
+    if engine in ("external-http", "pid-http", "pid"):
+        return await run_external_http_upscale(input_path, output_path, scale, config)
+    raise RuntimeError(f"Unsupported upscale engine: {engine}")
+
+
+def is_truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def allow_restricted_upscale_upload(project_config: Dict[str, Any]) -> bool:
+    upscale_config = project_config.get("upscale", {}) or {}
+    return bool(upscale_config.get("allowRestrictedUpload")) or is_truthy(os.getenv("ALLOW_RESTRICTED_UPSCALE_UPLOAD"))
+
+
+def find_restricted_upscale_uploads(results: List[Dict[str, Any]], project: str) -> List[Dict[str, str]]:
+    blocked = []
+    for result in results:
+        if result.get("_project") not in ("", project):
+            continue
+        for source_key, upscale_info in (result.get("_upscaled") or {}).items():
+            engine = str(upscale_info.get("engine") or "").strip().lower()
+            if engine in RESTRICTED_UPSCALE_ENGINES and upscale_info.get("path") and upscale_info.get("r2Key"):
+                blocked.append({
+                    "name": str(result.get("name", "")),
+                    "source": str(source_key),
+                    "engine": engine,
+                })
+    return blocked
+
+
 # --- Crop ---
 @app.post("/api/crop")
-async def crop_images(project: str = "mbti"):
+async def crop_images(project: str = "mbti", run_id: str = ""):
     """생성된 1024x1024 이미지를 프로젝트 설정의 크롭 비율로 자동 크롭"""
+    if not validate_project_id(project):
+        raise HTTPException(status_code=400, detail="Invalid project")
     project_path = os.path.join(PROJECTS_DIR, f"{project}.json")
     if not os.path.exists(project_path):
         return JSONResponse(status_code=404, content={"error": f"Project config not found: {project}"})
@@ -3086,11 +3902,19 @@ async def crop_images(project: str = "mbti"):
     with open(project_path, "r", encoding="utf-8") as f:
         project_config = json.load(f)
 
-    crops = project_config.get("crops", {})
+    crops = project_config.get("outputProfiles") or project_config.get("crops", {})
     if not crops:
         return {"error": "No crops defined in project config"}
 
-    results = batch_status.get("results", [])
+    run_record = None
+    if run_id:
+        run_record = load_run_record(project, run_id)
+    elif batch_status.get("results") and batch_status.get("project") in ("", project):
+        run_record = None
+    else:
+        run_record = find_latest_run_record(project)
+
+    results = (run_record or batch_status).get("results", [])
     successful = [
         r for r in results
         if r.get("status") == "success"
@@ -3145,13 +3969,30 @@ async def crop_images(project: str = "mbti"):
                 cropped_img.save(out_path, "WEBP", quality=85)
 
                 # R2 키 생성: _category + 영어 프롬프트 기반 (한국어 금지 — MBTI 프록시가 ASCII만 허용)
-                category = result.get("_category", "misc")
+                key_prefix = str(result.get("_target_storage_key_prefix", "") or "").strip("/")
+                content_id = str(result.get("_content_id") or result.get("_source_id") or "").strip()
+                asset_kind = str(result.get("_asset_kind") or result.get("type") or "img").strip()
+                request_id = str(result.get("_request_id") or content_id or "asset").strip()
+                batch_idx = result.get("_batch_idx", 0)
+                category = result.get("_category") or result.get("_content_type") or "misc"
+                category = re.sub(r'[^a-zA-Z0-9_-]', '-', str(category)).lower().strip('-') or "misc"
                 # 프롬프트 첫 부분(영어 breed명)에서 R2 키 생성
                 prompt_first = result.get("prompt", "unknown").split(",")[0].strip()
                 safe_result_name = re.sub(r'[^a-zA-Z0-9]', '-', prompt_first).lower().strip('-')
                 safe_result_name = re.sub(r'-+', '-', safe_result_name)  # 연속 하이픈 제거
+                if not safe_result_name:
+                    safe_result_name = "-".join([part for part in [content_id, asset_kind, request_id] if part])
+                    safe_result_name = re.sub(r'[^a-zA-Z0-9_-]', '-', safe_result_name).lower().strip('-')
+                    safe_result_name = re.sub(r'-+', '-', safe_result_name) or "asset"
                 gen_type = result.get("type", "img")
                 r2_key = f"{category}/{safe_result_name}_{gen_type}_{crop_name}.webp"
+                if key_prefix:
+                    safe_base = "-".join([part for part in [content_id, asset_kind, request_id, str(batch_idx)] if part not in ("", "0")])
+                    if not safe_base:
+                        safe_base = request_id
+                    safe_base = re.sub(r'[^a-zA-Z0-9_-]', '-', safe_base).lower().strip('-')
+                    safe_base = re.sub(r'-+', '-', safe_base) or "asset"
+                    r2_key = f"{key_prefix}/{safe_base}_{crop_name}.webp"
 
                 result_crops[crop_name] = {
                     "path": out_path,
@@ -3166,8 +4007,15 @@ async def crop_images(project: str = "mbti"):
                 result["_crops"] = result_crops
                 cropped.append({"name": result["name"], "crops": list(result_crops.keys())})
 
-        add_log(f"Cropped {len(cropped)} images into {sum(len(c['crops']) for c in cropped)} variants", "success")
-        persist_current_run()
+        crop_message = f"Cropped {len(cropped)} images into {sum(len(c['crops']) for c in cropped)} variants"
+        if run_record:
+            run_record["results"] = results
+            run_record.setdefault("logs", []).append(f"[{datetime.now().strftime('%H:%M:%S')}] OK {crop_message}")
+            run_record["updatedAt"] = datetime.now().isoformat()
+            save_run_record(project, str(run_record.get("runId") or run_id), run_record)
+        else:
+            add_log(crop_message, "success")
+            persist_current_run()
         return {"status": "success", "cropped": cropped}
 
     except ImportError:
@@ -3176,60 +4024,973 @@ async def crop_images(project: str = "mbti"):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+def cleanup_upscale_jobs(now: Optional[datetime] = None) -> None:
+    now = now or datetime.now()
+    terminal = {"success", "partial", "error", "cancelled"}
+    with UPSCALE_JOB_LOCK:
+        stale_ids = []
+        for job_id, job in UPSCALE_JOBS.items():
+            if job.get("status") not in terminal:
+                continue
+            updated_at = str(job.get("updatedAt") or job.get("createdAt") or "")
+            try:
+                updated_dt = datetime.fromisoformat(updated_at)
+            except ValueError:
+                stale_ids.append(job_id)
+                continue
+            if (now - updated_dt).total_seconds() > UPSCALE_JOB_TTL_SECONDS:
+                stale_ids.append(job_id)
+        for job_id in stale_ids:
+            UPSCALE_JOBS.pop(job_id, None)
+
+
+def safe_project_asset_dir(project: str, dirname: str) -> str:
+    project_root = os.path.abspath(resolve_project_output_dir(project))
+    path = os.path.abspath(os.path.join(project_root, dirname))
+    if os.path.commonpath([project_root, path]) != project_root:
+        raise HTTPException(status_code=400, detail="Invalid cleanup path")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def path_is_inside(path: str, roots: List[str]) -> bool:
+    abs_path = os.path.abspath(path)
+    for root in roots:
+        abs_root = os.path.abspath(root)
+        try:
+            if os.path.commonpath([abs_root, abs_path]) == abs_root:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def local_url_to_output_path(value: str) -> str:
+    normalized = value.strip().replace("\\", "/")
+    if not normalized.startswith("/outputs/"):
+        return ""
+    relative = normalized[len("/outputs/"):]
+    if not validate_relative_path(relative):
+        return ""
+    return os.path.abspath(os.path.join(OUTPUT_DIR, *relative.split("/")))
+
+
+def collect_referenced_upscale_paths(project: str, roots: List[str]) -> set:
+    referenced = set()
+    runs_dir = resolve_runs_dir(project)
+
+    def remember_path(value: str) -> None:
+        candidate = ""
+        if value.startswith("/outputs/"):
+            candidate = local_url_to_output_path(value)
+        elif os.path.isabs(value):
+            candidate = os.path.abspath(value)
+        if candidate and path_is_inside(candidate, roots):
+            referenced.add(os.path.normcase(candidate))
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+        elif isinstance(value, str):
+            remember_path(value)
+
+    if not os.path.isdir(runs_dir):
+        return referenced
+    for run_id in os.listdir(runs_dir):
+        run_path = os.path.join(runs_dir, run_id, "run.json")
+        if not os.path.isfile(run_path):
+            continue
+        try:
+            with open(run_path, "r", encoding="utf-8") as f:
+                visit(json.load(f))
+        except Exception:
+            continue
+    return referenced
+
+
+def build_output_local_url(path: str) -> str:
+    abs_path = os.path.abspath(path)
+    output_root = os.path.abspath(OUTPUT_DIR)
+    try:
+        relative = os.path.relpath(abs_path, output_root)
+    except ValueError:
+        return ""
+    if relative.startswith(".."):
+        return ""
+    return "/outputs/" + relative.replace("\\", "/")
+
+
+def cleanup_upscale_files(req: UpscaleCleanupRequest) -> Dict[str, Any]:
+    project = req.project or "mbti"
+    if not validate_project_id(project):
+        raise HTTPException(status_code=400, detail="Invalid project")
+
+    roots = []
+    if req.include_inputs:
+        roots.append(safe_project_asset_dir(project, "upscale-inputs"))
+    if req.include_upscaled:
+        roots.append(safe_project_asset_dir(project, "upscaled"))
+    if not roots:
+        raise HTTPException(status_code=400, detail="Select at least one upscale folder to clean")
+
+    threshold = datetime.now() - timedelta(days=max(0, int(req.older_than_days)))
+    referenced = collect_referenced_upscale_paths(project, roots) if req.keep_referenced else set()
+    candidates = []
+    kept_referenced = 0
+
+    for root in roots:
+        for current_root, _dirs, files in os.walk(root):
+            for filename in files:
+                path = os.path.abspath(os.path.join(current_root, filename))
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                normalized = os.path.normcase(path)
+                if normalized in referenced:
+                    kept_referenced += 1
+                    continue
+                modified_at = datetime.fromtimestamp(stat.st_mtime)
+                if modified_at > threshold:
+                    continue
+                candidates.append({
+                    "path": path,
+                    "localUrl": build_output_local_url(path),
+                    "size": stat.st_size,
+                    "modifiedAt": modified_at.isoformat(),
+                })
+
+    deleted = 0
+    deleted_bytes = 0
+    errors = []
+    if not req.dry_run:
+        for item in candidates:
+            try:
+                os.remove(item["path"])
+                deleted += 1
+                deleted_bytes += int(item.get("size") or 0)
+            except OSError as exc:
+                errors.append({"path": item["path"], "error": str(exc)})
+
+    candidate_bytes = sum(int(item.get("size") or 0) for item in candidates)
+    return {
+        "status": "ok" if not errors else "partial",
+        "project": project,
+        "dryRun": req.dry_run,
+        "olderThanDays": int(req.older_than_days),
+        "candidates": candidates,
+        "candidateCount": len(candidates),
+        "candidateBytes": candidate_bytes,
+        "deleted": deleted,
+        "deletedBytes": deleted_bytes,
+        "keptReferenced": kept_referenced,
+        "errors": errors,
+    }
+
+
+def make_upscale_job(kind: str, project: str, run_id: str = "", total: int = 0) -> Dict[str, Any]:
+    cleanup_upscale_jobs()
+    now = datetime.now().isoformat()
+    job_id = f"upscale-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    job = {
+        "jobId": job_id,
+        "kind": kind,
+        "project": project,
+        "runId": run_id,
+        "status": "queued",
+        "cancelRequested": False,
+        "total": total,
+        "completed": 0,
+        "succeeded": 0,
+        "errors": [],
+        "upscaled": [],
+        "message": "Queued",
+        "currentItem": "",
+        "createdAt": now,
+        "updatedAt": now,
+        "result": None,
+    }
+    with UPSCALE_JOB_LOCK:
+        UPSCALE_JOBS[job_id] = job
+    return copy.deepcopy(job)
+
+
+def update_upscale_job(job_id: Optional[str], **updates: Any) -> Dict[str, Any]:
+    if not job_id:
+        return {}
+    with UPSCALE_JOB_LOCK:
+        job = UPSCALE_JOBS.get(job_id)
+        if not job:
+            return {}
+        for key, value in updates.items():
+            job[key] = value
+        job["updatedAt"] = datetime.now().isoformat()
+        return copy.deepcopy(job)
+
+
+def get_upscale_job(job_id: str) -> Dict[str, Any]:
+    with UPSCALE_JOB_LOCK:
+        job = UPSCALE_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Upscale job not found")
+        return copy.deepcopy(job)
+
+
+async def read_upload_bytes_limited(file: UploadFile) -> bytes:
+    upload_bytes = await file.read(MAX_UPSCALE_UPLOAD_BYTES + 1)
+    if not upload_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded image is empty")
+    if len(upload_bytes) > MAX_UPSCALE_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"Uploaded image is too large. Max {MAX_UPSCALE_UPLOAD_BYTES // (1024 * 1024)}MB")
+    return upload_bytes
+
+
+def merge_upscale_updates_into_run_record(project: str, run_id: str, updated_results: List[Dict[str, Any]], log_entry: str) -> bool:
+    path = resolve_run_file(project, run_id)
+    with RUN_STORE_LOCK:
+        if not os.path.exists(path):
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            latest = json.load(f)
+        latest_results = latest.get("results") or []
+        for idx, updated in enumerate(updated_results):
+            if idx >= len(latest_results):
+                latest_results.append(updated)
+                continue
+            target = latest_results[idx]
+            if updated.get("_upscaled"):
+                target.setdefault("_upscaled", {}).update(updated.get("_upscaled") or {})
+            updated_history = updated.get("_upscale_history") or []
+            if updated_history:
+                history = target.setdefault("_upscale_history", [])
+                seen = {
+                    (
+                        item.get("versionId", ""),
+                        item.get("path", ""),
+                        item.get("sourceKey", ""),
+                        item.get("source", ""),
+                    )
+                    for item in history
+                }
+                for item in updated_history:
+                    key = (
+                        item.get("versionId", ""),
+                        item.get("path", ""),
+                        item.get("sourceKey", ""),
+                        item.get("source", ""),
+                    )
+                    if key not in seen:
+                        history.append(item)
+                        seen.add(key)
+        latest["results"] = latest_results
+        latest.setdefault("logs", []).append(log_entry)
+        latest["updatedAt"] = datetime.now().isoformat()
+        latest["codexHandoff"] = build_codex_handoff_snapshot(latest, include_lineage=True)
+        write_json_atomic(path, latest)
+    return True
+
+
+def save_uploaded_upscale_run(
+    project: str,
+    stem: str,
+    safe_name: str,
+    input_path: str,
+    input_url: str,
+    input_width: int,
+    input_height: int,
+    upscale_info: Dict[str, Any],
+    scale: int,
+    engine: str,
+) -> str:
+    run_id = f"upscale-upload-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    now = datetime.now().isoformat()
+    result = {
+        "name": stem,
+        "type": "upscale-upload",
+        "status": "success",
+        "review_status": "pending",
+        "review_note": "",
+        "prompt": "",
+        "positive": "",
+        "negative": "",
+        "width": input_width,
+        "height": input_height,
+        "url": input_url,
+        "localUrl": input_url,
+        "local_path": input_path,
+        "duration": 0,
+        "_project": project,
+        "_request_id": run_id,
+        "_content_type": "upscale",
+        "_content_id": stem,
+        "_asset_kind": "upscale-upload",
+        "_target_crops": ["source"],
+        "_metadata": {
+            "sourceFileName": safe_name,
+            "source": "pc-upload",
+        },
+        "_upscaled": {"source": upscale_info},
+        "_upscale_history": [upscale_info],
+    }
+    record = {
+        "runId": run_id,
+        "projectId": project,
+        "mode": "upscale-upload",
+        "providerId": engine,
+        "request": {
+            "requestId": run_id,
+            "projectId": project,
+            "mode": "upscale-upload",
+            "providerId": engine,
+            "promptSource": "pc-upload",
+            "prompts": [],
+            "referenceAssets": [],
+            "outputTypes": ["source-upscaled"],
+            "generationParams": {"scale": scale, "engine": engine},
+            "metadata": {
+                "sourceFileName": safe_name,
+                "runName": f"Upscale upload: {safe_name}",
+            },
+        },
+        "status": {
+            "is_running": False,
+            "cancel_requested": False,
+            "finish_status": "success",
+            "total": 1,
+            "completed": 1,
+            "succeeded": 1,
+            "warnings": 0,
+            "errors": 0,
+            "current_item": "Uploaded image upscaled",
+        },
+        "referenceAssets": [],
+        "results": [result],
+        "logs": [f"[{datetime.now().strftime('%H:%M:%S')}] OK Uploaded image upscaled with {engine} x{scale}"],
+        "timing": {"batch_start": None, "image_durations": [], "current_start": None},
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    save_run_record(project, run_id, record)
+    return run_id
+
+
+def upscale_job_cancel_requested(job_id: Optional[str]) -> bool:
+    if not job_id:
+        return False
+    with UPSCALE_JOB_LOCK:
+        return bool((UPSCALE_JOBS.get(job_id) or {}).get("cancelRequested"))
+
+
+def start_upscale_worker(job_id: str, coro_factory) -> None:
+    def _run() -> None:
+        try:
+            asyncio.run(coro_factory())
+        except HTTPException as exc:
+            update_upscale_job(job_id, status="error", message=str(exc.detail), currentItem="")
+        except Exception as exc:
+            logger.exception("Upscale job failed")
+            update_upscale_job(job_id, status="error", message=str(exc), currentItem="")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+async def execute_upscale_request(req: UpscaleRequest, job_id: Optional[str] = None) -> Dict[str, Any]:
+    project = req.project or "mbti"
+    if not validate_project_id(project):
+        raise HTTPException(status_code=400, detail="Invalid project")
+
+    project_config = load_project_config(project)
+    upscale_config = resolve_upscale_config(project_config, req)
+    scale = int(upscale_config["scale"])
+    source_mode = (req.source or "crops").strip().lower()
+    if source_mode not in {"crops", "source", "original", "all"}:
+        raise HTTPException(status_code=400, detail="Invalid upscale source")
+    requested_crops = {str(item).strip() for item in req.crop_names or [] if str(item).strip()}
+
+    run_record = None
+    run_id = str(req.run_id or "").strip()
+    if run_id:
+        run_record = load_run_record(project, run_id)
+    elif batch_status.get("results") and batch_status.get("project") in ("", project):
+        run_record = None
+    else:
+        run_record = find_latest_run_record(project)
+        run_id = str((run_record or {}).get("runId") or "")
+
+    status_source = run_record or batch_status
+    results = status_source.get("results", [])
+    successful = [
+        r for r in results
+        if r.get("status") == "success"
+        and r.get("_project") in ("", project)
+    ]
+    if not successful:
+        update_upscale_job(job_id, status="error", message="No successful images to upscale", total=0, completed=0)
+        return {"error": "No successful images to upscale"}
+
+    output_dir = os.path.join(OUTPUT_DIR, project, "upscaled")
+    os.makedirs(output_dir, exist_ok=True)
+    upscaled = []
+    errors = []
+    work_items = []
+
+    for result in successful:
+        sources = []
+        if source_mode in ("crops", "all"):
+            for crop_name, crop_info in (result.get("_crops") or {}).items():
+                if requested_crops and crop_name not in requested_crops:
+                    continue
+                crop_path = crop_info.get("path", "")
+                if crop_path and os.path.exists(crop_path):
+                    sources.append({
+                        "key": crop_name,
+                        "kind": "crop",
+                        "path": crop_path,
+                        "width": crop_info.get("width"),
+                        "height": crop_info.get("height"),
+                        "r2Key": crop_info.get("r2Key", ""),
+                    })
+        if source_mode in ("source", "original", "all"):
+            source_path = result.get("local_path", "")
+            if source_path and os.path.exists(source_path):
+                sources.append({
+                    "key": "source",
+                    "kind": "source",
+                    "path": source_path,
+                    "width": result.get("width"),
+                    "height": result.get("height"),
+                    "r2Key": "",
+                })
+
+        base_name = os.path.splitext(os.path.basename(result.get("local_path") or result.get("name") or "asset"))[0]
+        for source in sources:
+            work_items.append({"result": result, "source": source, "baseName": base_name})
+
+    if not work_items:
+        update_upscale_job(job_id, status="error", message="No matching images to upscale", total=0, completed=0)
+        return {"error": "No matching images to upscale"}
+
+    update_upscale_job(
+        job_id,
+        status="running",
+        total=len(work_items),
+        completed=0,
+        succeeded=0,
+        errors=[],
+        upscaled=[],
+        message=f"Upscaling {len(work_items)} image(s)",
+    )
+
+    for item in work_items:
+        if upscale_job_cancel_requested(job_id):
+            update_upscale_job(job_id, status="cancelled", message="Upscale cancelled", currentItem="")
+            break
+
+        result = item["result"]
+        source = item["source"]
+        source_key = source["key"]
+        base_name = item["baseName"]
+        version_id = build_upscale_version_id()
+        out_name = build_upscale_output_name(base_name, source_key, scale, upscale_config["engine"], version_id)
+        out_path = os.path.join(output_dir, out_name)
+        update_upscale_job(job_id, currentItem=f"{result.get('name', '')} / {source_key}")
+        try:
+            width, height = await upscale_image_file(source["path"], out_path, scale, upscale_config)
+        except Exception as exc:
+            error_info = {"name": result.get("name", ""), "source": source_key, "error": str(exc)}
+            errors.append(error_info)
+            update_upscale_job(
+                job_id,
+                completed=len(upscaled) + len(errors),
+                errors=copy.deepcopy(errors),
+                message=str(exc),
+            )
+            continue
+
+        r2_key = build_upscaled_r2_key(source.get("r2Key", ""), f"{base_name}_{source_key}", scale, upscale_config["engine"], version_id)
+        info = {
+            "path": out_path,
+            "localUrl": f"/outputs/{project}/upscaled/{out_name}",
+            "r2Key": r2_key,
+            "url": f"/api/images/{r2_key}",
+            "width": width,
+            "height": height,
+            "scale": scale,
+            "engine": upscale_config["engine"],
+            "source": source["kind"],
+            "sourceKey": source_key,
+            "versionId": version_id,
+        }
+        result.setdefault("_upscaled", {})[source_key] = info
+        result.setdefault("_upscale_history", []).append(info)
+        upscaled.append({"name": result.get("name", ""), "source": source_key, "width": width, "height": height})
+        update_upscale_job(
+            job_id,
+            completed=len(upscaled) + len(errors),
+            succeeded=len(upscaled),
+            upscaled=copy.deepcopy(upscaled),
+            errors=copy.deepcopy(errors),
+            message=f"Upscaled {len(upscaled)} of {len(work_items)}",
+        )
+
+    cancelled = upscale_job_cancel_requested(job_id)
+    message = f"Upscaled {len(upscaled)} variants with {upscale_config['engine']} x{scale}"
+    if errors:
+        message += f" ({len(errors)} failed)"
+    if cancelled:
+        message += " (cancelled)"
+
+    if run_record:
+        level = "WARN" if cancelled else "ERROR" if errors and not upscaled else "WARN" if errors else "OK"
+        log_entry = f"[{datetime.now().strftime('%H:%M:%S')}] {level} {message}"
+        target_run_id = str(run_record.get("runId") or run_id)
+        if not merge_upscale_updates_into_run_record(project, target_run_id, results, log_entry):
+            run_record["results"] = results
+            run_record.setdefault("logs", []).append(log_entry)
+            run_record["updatedAt"] = datetime.now().isoformat()
+            save_run_record(project, target_run_id, run_record)
+    else:
+        add_log(message, "warning" if cancelled else "error" if errors and not upscaled else "warning" if errors else "success")
+        persist_current_run()
+
+    if cancelled:
+        result_payload = {
+            "status": "cancelled",
+            "project": project,
+            "runId": run_id or status_source.get("run_id", ""),
+            "engine": upscale_config["engine"],
+            "scale": scale,
+            "upscaled": upscaled,
+            "errors": errors,
+        }
+        update_upscale_job(job_id, status="cancelled", message=message, currentItem="", result=result_payload)
+        return result_payload
+
+    if errors and not upscaled:
+        first_error = str(errors[0].get("error") or "Unknown upscale error")
+        update_upscale_job(job_id, status="error", message=f"Upscale failed for all selected images: {first_error}", currentItem="")
+        raise HTTPException(status_code=400, detail=f"Upscale failed for all selected images: {first_error}")
+
+    result_payload = {
+        "status": "partial" if errors else "success",
+        "project": project,
+        "runId": run_id or status_source.get("run_id", ""),
+        "engine": upscale_config["engine"],
+        "scale": scale,
+        "upscaled": upscaled,
+        "errors": errors,
+    }
+    update_upscale_job(job_id, status=result_payload["status"], message=message, currentItem="", result=result_payload)
+    return result_payload
+
+
+async def execute_uploaded_upscale(
+    project: str,
+    scale: int,
+    engine: str,
+    safe_name: str,
+    upload_bytes: bytes,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    request = UpscaleRequest(project=project, scale=scale, engine=engine or "pillow")
+    project_config = load_project_config(project)
+    upscale_config = resolve_upscale_config(project_config, request)
+    scale_value = int(upscale_config["scale"])
+    short_id = uuid.uuid4().hex[:8]
+    stem = os.path.splitext(safe_name)[0]
+
+    input_dir = os.path.join(OUTPUT_DIR, project, "upscale-inputs")
+    output_dir = os.path.join(OUTPUT_DIR, project, "upscaled")
+    os.makedirs(input_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    version_id = build_upscale_version_id()
+    input_name = f"{sanitize_storage_token(stem, 'upload')}_{short_id}.webp"
+    input_path = os.path.join(input_dir, input_name)
+    output_name = build_upscale_output_name(stem, "upload", scale_value, upscale_config["engine"], version_id)
+    output_path = os.path.join(output_dir, output_name)
+
+    update_upscale_job(job_id, status="running", total=2, completed=0, message="Preparing uploaded image", currentItem=safe_name)
+    input_width, input_height = await asyncio.to_thread(write_image_bytes_as_webp, upload_bytes, input_path)
+    update_upscale_job(job_id, completed=1, message="Upscaling uploaded image")
+
+    if upscale_job_cancel_requested(job_id):
+        result_payload = {
+            "status": "cancelled",
+            "project": project,
+            "engine": upscale_config["engine"],
+            "scale": scale_value,
+            "input": {"path": input_path, "localUrl": f"/outputs/{project}/upscale-inputs/{input_name}"},
+            "upscaled": [],
+            "errors": [],
+        }
+        update_upscale_job(job_id, status="cancelled", message="Upscale cancelled", currentItem="", result=result_payload)
+        return result_payload
+
+    width, height = await upscale_image_file(input_path, output_path, scale_value, upscale_config)
+    if upscale_job_cancel_requested(job_id):
+        result_payload = {
+            "status": "cancelled",
+            "project": project,
+            "engine": upscale_config["engine"],
+            "scale": scale_value,
+            "input": {
+                "path": input_path,
+                "localUrl": f"/outputs/{project}/upscale-inputs/{input_name}",
+                "width": input_width,
+                "height": input_height,
+            },
+            "upscaled": [],
+            "errors": [],
+        }
+        update_upscale_job(job_id, status="cancelled", completed=2, message="Upscale cancelled", currentItem="", result=result_payload)
+        return result_payload
+
+    output_info = {
+        "name": stem,
+        "source": "upload",
+        "path": output_path,
+        "localUrl": f"/outputs/{project}/upscaled/{output_name}",
+        "r2Key": f"upscaled/uploads/{sanitize_storage_token(stem, 'upload')}_{sanitize_storage_token(upscale_config['engine'], 'upscale')}_x{scale_value}_{sanitize_storage_token(version_id, 'v')}.webp",
+        "width": width,
+        "height": height,
+        "engine": upscale_config["engine"],
+        "scale": scale_value,
+        "versionId": version_id,
+    }
+    input_url = f"/outputs/{project}/upscale-inputs/{input_name}"
+    run_id = save_uploaded_upscale_run(
+        project,
+        stem,
+        safe_name,
+        input_path,
+        input_url,
+        input_width,
+        input_height,
+        output_info,
+        scale_value,
+        upscale_config["engine"],
+    )
+    result_payload = {
+        "status": "success",
+        "project": project,
+        "runId": run_id,
+        "engine": upscale_config["engine"],
+        "scale": scale_value,
+        "input": {
+            "path": input_path,
+            "localUrl": input_url,
+            "width": input_width,
+            "height": input_height,
+        },
+        "upscaled": [output_info],
+        "errors": [],
+    }
+    update_upscale_job(
+        job_id,
+        status="success",
+        completed=2,
+        succeeded=1,
+        upscaled=copy.deepcopy(result_payload["upscaled"]),
+        message="Uploaded image upscaled",
+        currentItem="",
+        result=result_payload,
+    )
+    return result_payload
+
+
+# --- Upscale ---
+@app.post("/api/upscale")
+async def upscale_images(req: UpscaleRequest):
+    return await execute_upscale_request(req)
+
+
+@app.post("/api/upscale/jobs")
+async def start_upscale_job(req: UpscaleRequest):
+    project = req.project or "mbti"
+    if not validate_project_id(project):
+        raise HTTPException(status_code=400, detail="Invalid project")
+    job = make_upscale_job("run", project, str(req.run_id or ""))
+    start_upscale_worker(job["jobId"], lambda: execute_upscale_request(req, job_id=job["jobId"]))
+    return get_upscale_job(job["jobId"])
+
+
+@app.get("/api/upscale/jobs/{job_id}")
+async def get_upscale_job_route(job_id: str):
+    return get_upscale_job(job_id)
+
+
+@app.post("/api/upscale/jobs/{job_id}/cancel")
+async def cancel_upscale_job(job_id: str):
+    job = get_upscale_job(job_id)
+    if job.get("status") in {"success", "partial", "error", "cancelled"}:
+        return job
+    return update_upscale_job(job_id, cancelRequested=True, status="cancelling", message="Cancelling upscale")
+
+
+@app.post("/api/upscale/cleanup")
+async def cleanup_upscale_files_route(req: UpscaleCleanupRequest):
+    return await asyncio.to_thread(cleanup_upscale_files, req)
+
+
+@app.post("/api/upscale/upload")
+async def upscale_uploaded_image(
+    project: str = Form("mbti"),
+    scale: int = Form(2),
+    engine: str = Form(""),
+    file: UploadFile = File(...),
+):
+    if not validate_project_id(project):
+        raise HTTPException(status_code=400, detail="Invalid project")
+
+    safe_name = sanitize_asset_filename(file.filename or "upload.png", fallback="upload")
+    suffix = os.path.splitext(safe_name)[1].lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise HTTPException(status_code=400, detail="Only PNG, JPG, JPEG, or WEBP images can be upscaled")
+
+    try:
+        upload_bytes = await read_upload_bytes_limited(file)
+        return await execute_uploaded_upscale(project, scale, engine, safe_name, upload_bytes)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Image upscale failed: {str(exc)}")
+
+
+@app.post("/api/upscale/upload/jobs")
+async def start_uploaded_upscale_job(
+    project: str = Form("mbti"),
+    scale: int = Form(2),
+    engine: str = Form(""),
+    file: UploadFile = File(...),
+):
+    if not validate_project_id(project):
+        raise HTTPException(status_code=400, detail="Invalid project")
+
+    safe_name = sanitize_asset_filename(file.filename or "upload.png", fallback="upload")
+    suffix = os.path.splitext(safe_name)[1].lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise HTTPException(status_code=400, detail="Only PNG, JPG, JPEG, or WEBP images can be upscaled")
+
+    upload_bytes = await read_upload_bytes_limited(file)
+
+    job = make_upscale_job("upload", project, total=2)
+    update_upscale_job(job["jobId"], currentItem=safe_name)
+    start_upscale_worker(
+        job["jobId"],
+        lambda: execute_uploaded_upscale(project, scale, engine, safe_name, upload_bytes, job_id=job["jobId"]),
+    )
+    return get_upscale_job(job["jobId"])
+
+
 # --- Manifest ---
 @app.get("/api/manifest")
-async def get_manifest(project: str = "mbti"):
+async def get_manifest(project: str = "mbti", run_id: str = "", update_latest: bool = False):
     """생성+크롭 완료된 이미지 목록을 manifest.json 형태로 반환"""
-    results = batch_status.get("results", [])
+    run_record = None
+    if run_id:
+        run_record = load_run_record(project, run_id)
+    elif batch_status.get("results") and batch_status.get("project") in ("", project):
+        run_record = None
+    else:
+        run_record = find_latest_run_record(project)
+
+    status_source = run_record or batch_status
+    results = status_source.get("results", [])
     successful = [r for r in results if r.get("status") == "success" and r.get("_project") in ("", project)]
+    project_config = load_project_config(project)
+    output_profiles = project_config.get("outputProfiles", project_config.get("crops", {})) or {}
 
     items = []
     for r in successful:
         assets = []
+        variants = {}
         crops = r.get("_crops", {})
         for crop_name, crop_info in crops.items():
+            profile = output_profiles.get(crop_name, {}) or {}
+            local_url = crop_info.get("localUrl", "")
+            public_url = crop_info.get("url", local_url)
             assets.append({
                 "cropType": crop_name,
                 "r2Key": crop_info.get("r2Key", ""),
-                "url": crop_info["url"],
+                "url": public_url,
+                "localUrl": local_url,
                 "width": crop_info["width"],
                 "height": crop_info["height"],
             })
+            variants[crop_name] = {
+                "status": r.get("review_status", "pending"),
+                "url": public_url,
+                "localUrl": local_url,
+                "localPath": crop_info.get("path", ""),
+                "storageKey": crop_info.get("r2Key", ""),
+                "width": crop_info["width"],
+                "height": crop_info["height"],
+                "ratio": profile.get("ratio", ""),
+                "aspectRatio": profile.get("ratio", ""),
+            }
+            upscaled_info = (r.get("_upscaled") or {}).get(crop_name)
+            if upscaled_info:
+                upscaled_local_url = upscaled_info.get("localUrl", "")
+                upscaled_public_url = upscaled_info.get("url", upscaled_local_url)
+                variants[crop_name]["upscaled"] = {
+                    "url": upscaled_public_url,
+                    "localUrl": upscaled_local_url,
+                    "localPath": upscaled_info.get("path", ""),
+                    "storageKey": upscaled_info.get("r2Key", ""),
+                    "width": upscaled_info.get("width"),
+                    "height": upscaled_info.get("height"),
+                    "scale": upscaled_info.get("scale"),
+                    "engine": upscaled_info.get("engine", ""),
+                    "versionId": upscaled_info.get("versionId", ""),
+                }
+                assets.append({
+                    "cropType": crop_name,
+                    "variantRole": "upscaled",
+                    "r2Key": upscaled_info.get("r2Key", ""),
+                    "url": upscaled_public_url,
+                    "localUrl": upscaled_local_url,
+                    "width": upscaled_info.get("width"),
+                    "height": upscaled_info.get("height"),
+                    "scale": upscaled_info.get("scale"),
+                    "engine": upscaled_info.get("engine", ""),
+                    "versionId": upscaled_info.get("versionId", ""),
+                })
+
+        source_upscaled_info = (r.get("_upscaled") or {}).get("source")
+        if source_upscaled_info:
+            upscaled_local_url = source_upscaled_info.get("localUrl", "")
+            upscaled_public_url = source_upscaled_info.get("url", upscaled_local_url)
+            variants["source"] = {
+                "status": r.get("review_status", "pending"),
+                "url": r.get("url", ""),
+                "localUrl": r.get("localUrl", r.get("url", "")),
+                "localPath": r.get("local_path", ""),
+                "width": r.get("width"),
+                "height": r.get("height"),
+                "upscaled": {
+                    "url": upscaled_public_url,
+                    "localUrl": upscaled_local_url,
+                    "localPath": source_upscaled_info.get("path", ""),
+                    "storageKey": source_upscaled_info.get("r2Key", ""),
+                    "width": source_upscaled_info.get("width"),
+                    "height": source_upscaled_info.get("height"),
+                    "scale": source_upscaled_info.get("scale"),
+                    "engine": source_upscaled_info.get("engine", ""),
+                    "versionId": source_upscaled_info.get("versionId", ""),
+                },
+            }
+            assets.append({
+                "cropType": "source",
+                "variantRole": "upscaled",
+                "r2Key": source_upscaled_info.get("r2Key", ""),
+                "url": upscaled_public_url,
+                "localUrl": upscaled_local_url,
+                "width": source_upscaled_info.get("width"),
+                "height": source_upscaled_info.get("height"),
+                "scale": source_upscaled_info.get("scale"),
+                "engine": source_upscaled_info.get("engine", ""),
+                "versionId": source_upscaled_info.get("versionId", ""),
+            })
+
+        review_status = r.get("review_status", "pending")
+        contract_status = {
+            "approved": "approved",
+            "rejected": "rejected",
+            "revision_requested": "revision_requested",
+            "pending": "generated",
+        }.get(review_status, review_status)
+        content_id = r.get("_content_id") or r.get("_source_id", f"{r['name']}-{r['type']}")
+        asset_kind = r.get("_asset_kind") or r.get("type", "")
+        request_id = r.get("_request_id", r.get("_source_id", ""))
+        asset_id_parts = [project, content_id, asset_kind]
+        if request_id and request_id not in asset_id_parts:
+            asset_id_parts.append(request_id)
 
         items.append({
-            "contentId": r.get("_source_id", f"{r['name']}-{r['type']}"),
+            "assetId": "-".join(str(part).strip("-") for part in asset_id_parts if str(part or "").strip("-")),
+            "requestId": request_id,
+            "contentType": r.get("_content_type", ""),
+            "contentId": content_id,
+            "assetKind": asset_kind,
+            "kind": asset_kind,
             "subjectKey": r.get("_subject_key", ""),
             "resultIndex": r.get("_result_index", 0),
             "assetType": r.get("type", ""),
             "name": r["name"],
-            "status": r.get("review_status", "pending"),
+            "status": contract_status,
+            "reviewStatus": review_status,
+            "reviewNote": r.get("review_note", ""),
             "originalPath": r.get("local_path", ""),
             "originalUrl": r.get("url", ""),
             "referenceAssets": r.get("_reference_assets", []),
+            "sourcePrompt": r.get("prompt", ""),
+            "prompt": r.get("prompt", ""),
+            "finalPositivePrompt": r.get("positive", ""),
+            "finalNegativePrompt": r.get("negative", ""),
+            "negativePrompt": r.get("_negative_prompt", r.get("negative", "")),
+            "stylePreset": r.get("_style_preset", ""),
+            "seed": r.get("_actual_seed", (r.get("_provider_params", {}) or {}).get("seed", "")),
+            "alt": r.get("_alt", r.get("name", "")),
+            "providerParams": r.get("_provider_params", {}),
+            "targetStorage": r.get("_target_storage", {}),
+            "reviewPolicy": r.get("_review_policy", {}),
+            "priority": r.get("_priority", ""),
+            "metadata": r.get("_metadata", {}),
+            "requestStatus": r.get("_request_status", ""),
+            "regenerateOf": r.get("_regenerate_of", None),
+            "failurePolicy": r.get("_failure_policy", ""),
+            "slots": list(variants.keys()),
+            "variants": variants,
             "assets": assets,
         })
 
     manifest = {
+        "schemaVersion": 1,
         "generatedAt": datetime.now().isoformat(),
+        "projectId": project,
         "project": project,
+        "runId": status_source.get("runId") or status_source.get("run_id", ""),
         "totalImages": len(items),
         "items": items,
     }
 
     # 파일로도 저장
+    manifest_run_id = str(manifest.get("runId") or "")
+    if manifest_run_id:
+        run_manifest_path = os.path.join(resolve_run_dir(project, manifest_run_id), "manifest.json")
+        with open(run_manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+
     manifest_dir = os.path.join(OUTPUT_DIR, project)
     os.makedirs(manifest_dir, exist_ok=True)
     manifest_path = os.path.join(manifest_dir, "manifest.json")
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    if not run_id or update_latest:
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     return manifest
 
 
 # --- R2 Upload ---
 @app.post("/api/upload")
-async def upload_to_r2(project: str = "kemi"):
+async def upload_to_r2(project: str = "kemi", run_id: str = ""):
     try:
+        if not validate_project_id(project):
+            raise HTTPException(status_code=400, detail="Invalid project")
+        run_record = load_run_record(project, run_id) if run_id else None
+        results = (run_record or batch_status).get("results", [])
+        project_config = load_project_config(project)
+        blocked_upscales = find_restricted_upscale_uploads(results, project)
+        if blocked_upscales and not allow_restricted_upscale_upload(project_config):
+            raise HTTPException(
+                status_code=400,
+                detail="Restricted upscale variants require upscale.allowRestrictedUpload=true or ALLOW_RESTRICTED_UPSCALE_UPLOAD=1 before R2 upload",
+            )
         s3 = boto3.client(
             's3',
             endpoint_url=f"https://{os.getenv('CLOUDFLARE_ACCOUNT_ID')}.r2.cloudflarestorage.com",
@@ -3241,7 +5002,6 @@ async def upload_to_r2(project: str = "kemi"):
         bucket_name = os.getenv('R2_BUCKET_NAME')
         mappings = {}
         uploaded = 0
-        results = batch_status.get("results", [])
 
         # 크롭된 이미지를 R2 키 기반으로 업로드
         for result in results:
@@ -3260,14 +5020,34 @@ async def upload_to_r2(project: str = "kemi"):
                 )
                 mappings[r2_key] = f"/api/images/{r2_key}"
                 uploaded += 1
+            for upscale_key, upscale_info in (result.get("_upscaled") or {}).items():
+                local_path = upscale_info.get("path", "")
+                r2_key = upscale_info.get("r2Key", "")
+                if not local_path or not r2_key or not os.path.exists(local_path):
+                    continue
+                content_type = 'image/webp' if local_path.endswith('.webp') else 'image/png'
+                await asyncio.to_thread(
+                    s3.upload_file, local_path, bucket_name, r2_key,
+                    ExtraArgs={'ContentType': content_type}
+                )
+                mappings[r2_key] = f"/api/images/{r2_key}"
+                uploaded += 1
 
-        add_log(f"Uploaded {uploaded} images to R2", "success")
-        persist_current_run()
-        return {"status": "success", "project": project, "mappings": mappings, "uploaded": uploaded}
+        upload_message = f"Uploaded {uploaded} images to R2"
+        if run_record:
+            run_record.setdefault("logs", []).append(f"[{datetime.now().strftime('%H:%M:%S')}] OK {upload_message}")
+            run_record["updatedAt"] = datetime.now().isoformat()
+            save_run_record(project, run_id, run_record)
+        else:
+            add_log(upload_message, "success")
+            persist_current_run()
+        return {"status": "success", "project": project, "runId": run_id, "mappings": mappings, "uploaded": uploaded}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=os.getenv("AI_GENERATOR_HOST", "127.0.0.1"), port=int(os.getenv("AI_GENERATOR_PORT", "8000")))

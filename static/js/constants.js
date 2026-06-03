@@ -9,6 +9,12 @@ const CONFIG = {
         RUN_CODEX_HANDOFF: '/api/runs', // + /{runId}/codex-handoff
         STATUS: '/api/batch/status',
         HEALTH: '/api/health',
+        CODEX_IMPORT: '/api/codex-import',
+        UPSCALE: '/api/upscale',
+        UPSCALE_JOBS: '/api/upscale/jobs',
+        UPSCALE_CLEANUP: '/api/upscale/cleanup',
+        UPSCALE_UPLOAD: '/api/upscale/upload',
+        UPSCALE_UPLOAD_JOBS: '/api/upscale/upload/jobs',
         UPLOAD_R2: '/api/upload',
         REVIEW: '/api/results',  // + /{index}/review
         PROMPT_FILES: '/api/prompts/files',
@@ -41,6 +47,18 @@ const CONFIG = {
         "icon": {
             p: "vector icon, minimal, flat, white background, app icon style, simple shapes, ui element, svg style",
             n: "complex, detailed, photo, 3d, shadow, gradient, noise"
+        },
+        "kemi-everyday-webtoon": {
+            p: "Korean mobile webtoon inspired everyday scene, emotionally relatable candid moment, natural facial expression, small real-life gesture, warm but restrained color palette, soft clean linework, semi-flat editorial illustration, simple lived-in background, mobile card friendly composition, no text in image",
+            n: "generic AI illustration, plastic 3d render, overly cute mascot, exaggerated anime face, fantasy scene, luxury ad mood, perfect stock-photo smile, text, letters, logo, watermark, phone frame, app screenshot, crowded background, distorted hands"
+        },
+        "kemi-soft-snapshot": {
+            p: "soft illustrated lifestyle snapshot, realistic posture and spacing, quiet relatable emotion, gentle natural light, subtle texture, approachable Korean app visual mood, modern casual clothing, simple background, crop-safe composition, no text in image",
+            n: "photorealistic celebrity, fashion editorial pose, brand logo, written text, speech bubble, harsh neon, over-saturated colors, glossy 3d, childish sticker, distorted anatomy, busy background"
+        },
+        "kemi-result-mood": {
+            p: "shareable test result artwork, human-centered symbolic scene, reflective but optimistic mood, clear emotional metaphor, soft natural expression, refined mobile illustration, safe empty space for UI overlay, balanced composition, no text in image",
+            n: "dramatic fantasy, tarot card, horoscope poster, generic business illustration, text, letters, logo, watermark, crowded symbols, harsh contrast, distorted anatomy, childish mascot"
         }
     },
     MODALS: {
@@ -65,9 +83,13 @@ const CONFIG = {
         LOGS: 'log-container',
         PROJECT_SELECTOR: 'project-selector',
         ACTIVE_PROVIDER_CHIP: 'active-provider-chip',
+        ACTIVE_UPSCALE_CHIP: 'active-upscale-chip',
         PROVIDER_STATUS_DOT: 'provider-status-dot',
         PROVIDER_STATUS_LABEL: 'provider-status-label',
         PROVIDER_STATUS_DETAIL: 'provider-status-detail',
+        UPSCALE_STATUS_DOT: 'upscale-status-dot',
+        UPSCALE_STATUS_LABEL: 'upscale-status-label',
+        UPSCALE_STATUS_DETAIL: 'upscale-status-detail',
         PROMPT_FILE_SELECTOR: 'prompt-file-selector',
         REFERENCE_ROOT: 'reference-assets-root',
         REFERENCE_STATUS_GRID: 'reference-status-grid',
