@@ -50,8 +50,8 @@ AI 이미지 배치 생성 + 리뷰 도구. ComfyUI 기반 로컬 생성 + 웹 U
 localhost:8000          포트 8000                   포트 8188              RTX 5080
                         Python FastAPI              Python + PyTorch
   웹 UI ──요청──→  배치 관리/리뷰 ──API 호출──→  이미지 생성 엔진 ──연산──→ VRAM 16GB
-  결과 확인 ←──응답──  프롬프트 관리  ←──이미지──   z-image-turbo 모델
-                       R2 업로드                    Qwen CLIP + VAE
+  결과 확인 ←──응답──  프롬프트 관리  ←──이미지──   Z-Image Turbo / FLUX.2 Klein 4B
+                       R2 업로드                    Qwen 3 4B + 모델별 VAE
 ```
 
 ### 왜 서버가 2개인가?
@@ -113,7 +113,7 @@ ComfyUI 자동 시작 → 15초 대기 → AI_Generator 시작 → 브라우저 
 
 ```bash
 cd D:\Projects\ComfyUI
-python main.py --listen --disable-xformers
+python main.py --listen --disable-xformers --use-ck-attention
 ```
 
 아래 메시지가 나오면 준비 완료:
@@ -204,11 +204,15 @@ python app.py
 
 | 항목 | 값 | 비고 |
 |------|------|------|
-| ComfyUI 모델 | z_image_turbo_bf16 + Qwen 3 4B CLIP + ae VAE | `ComfyUI/models/` 하위 |
+| ComfyUI 모델 | Z-Image Turbo BF16 또는 FLUX.2 Klein 4B FP8 | Studio의 Model Workflow에서 선택 |
+| 공용 텍스트 인코더 | Qwen 3 4B | 두 모델이 같은 파일을 재사용 |
+| VAE | Z-Image: `ae.safetensors`, FLUX.2: `flux2-vae.safetensors` | `ComfyUI/models/vae/` |
 | 이미지 출력 | `AI_Generator/outputs/kemi/` | thumb/ + hero/ 하위 |
 | 프롬프트 CSV | `AI_Generator/kemi/prompts/` | 웹 UI에서 편집 가능 |
 | R2 업로드 설정 | `.env` 파일 | 플레이스홀더 → 실제 키로 교체 필요 |
-| 워크플로우 | `workflow_api.json` | ComfyUI 노드 구성 |
+| 워크플로우 | `z_image_turbo.json`, `flux2_klein_4b_fp8.json` | FLUX.2 증류판은 자동으로 4스텝 사용 |
+
+모델을 처음 쓰거나 서로 전환할 때는 VRAM 로딩 때문에 첫 장이 1~2분 걸릴 수 있다. 같은 모델을 연속 생성할 때는 이후 이미지부터 빨라진다.
 
 다른 프로젝트 연결 기준:
 
@@ -221,6 +225,6 @@ python app.py
 
 - **백엔드**: Python FastAPI + aiohttp + boto3
 - **프론트엔드**: Vanilla JS + CSS (빌드 도구 없음)
-- **AI 엔진**: ComfyUI 0.13.0 (z-image-turbo + Qwen 3 4B CLIP + VAE)
+- **AI 엔진**: ComfyUI 0.34.2 (z-image-turbo + Qwen 3 4B CLIP + VAE)
 - **GPU**: NVIDIA RTX 5080 16GB VRAM
 - **Python**: 3.13.7 + 가상환경 (.venv)

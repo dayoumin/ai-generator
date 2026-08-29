@@ -180,7 +180,8 @@
                                     <label for="workflow-select"><i data-lucide="cpu"></i> Model Workflow</label>
                                     <select id="workflow-select" class="file-selector"
                                         style="font-weight: bold; color: var(--primary);">
-                                        <option value="z_image_turbo.json">z_image_turbo.json</option>
+                                        <option value="z_image_turbo.json">Z-Image Turbo — 기본/일러스트</option>
+                                        <option value="flux2_klein_4b_fp8.json">FLUX.2 Klein 4B FP8 — 빠른 사실적 이미지</option>
                                     </select>
                                 </div>
                                 <div class="config-group">
@@ -889,7 +890,7 @@
                                     <div class="step-content">
                                         <h4>ComfyUI 실행 (터미널 1)</h4>
                                         <div class="code-block">cd D:\Projects\ComfyUI<br>python main.py --listen
-                                            --disable-xformers</div>
+                                            --disable-xformers --use-ck-attention</div>
                                         <p class="step-check">✅ "To see the GUI go to: http://0.0.0.0:8188" 메시지 확인</p>
                                     </div>
                                 </div>

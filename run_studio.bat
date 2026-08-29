@@ -19,7 +19,7 @@ if %errorlevel% equ 0 (
     echo [!] ComfyUI is already running on port 8188.
 ) else (
     echo [*] Starting ComfyUI Engine in background...
-    start "ComfyUI-Engine" /min cmd /c "cd /d %COMFYUI_PATH% && python main.py --listen --disable-xformers --lowvram"
+    start "ComfyUI-Engine" /min cmd /c "cd /d %COMFYUI_PATH% && python main.py --listen --disable-xformers --lowvram --use-ck-attention"
     echo [*] Waiting for AI Engine to warm up (15s)...
     timeout /t 15 /nobreak >nul
 )

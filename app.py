@@ -2008,7 +2008,7 @@ async def select_upscale_version(index: int, body: dict, project: str = "kemi", 
 
 
 # --- Model Discovery ---
-async def discover_models(session):
+async def discover_models(session, workflow_template=None):
     def pick_best(options, preferred_names, partial_keywords=None):
         partial_keywords = partial_keywords or []
         lowered = [o for o in options if isinstance(o, str)]
@@ -2034,9 +2034,21 @@ async def discover_models(session):
     available_clips = clip_info.get("CLIPLoader", {}).get("input", {}).get("required", {}).get("clip_name", [[]])[0]
     available_vaes = vae_info.get("VAELoader", {}).get("input", {}).get("required", {}).get("vae_name", [[]])[0]
 
-    found_unet = pick_best(available_unets, ["z_image_turbo_bf16.safetensors"], ["z_image_turbo"])
-    found_clip = pick_best(available_clips, ["qwen_3_4b.safetensors"], ["qwen_3_4b"])
-    found_vae = pick_best(available_vaes, ["ae.safetensors"], ["ae"])
+    workflow_template = workflow_template or {}
+
+    def configured_name(class_types, input_name):
+        node_id = find_node_by_class(workflow_template, class_types)
+        if not node_id:
+            return None
+        value = workflow_template.get(node_id, {}).get("inputs", {}).get(input_name)
+        return value if isinstance(value, str) else None
+
+    configured_unet = configured_name(["UNETLoader", "CheckpointLoaderSimple"], "unet_name")
+    configured_clip = configured_name(["CLIPLoader", "DualCLIPLoader"], "clip_name")
+    configured_vae = configured_name(["VAELoader"], "vae_name")
+    found_unet = pick_best(available_unets, [configured_unet] if configured_unet else ["z_image_turbo_bf16.safetensors"])
+    found_clip = pick_best(available_clips, [configured_clip] if configured_clip else ["qwen_3_4b.safetensors"])
+    found_vae = pick_best(available_vaes, [configured_vae] if configured_vae else ["ae.safetensors"])
 
     results = {"UNET": found_unet, "CLIP": found_clip, "VAE": found_vae}
     missing = [k for k, v in results.items() if not v]
@@ -2136,7 +2148,10 @@ class GenerationProviderAdapter:
 
 
 def load_comfyui_workflow_template(workflow_name: str = "z_image_turbo.json") -> Dict[str, Any]:
-    path = os.path.join(BASE_DIR, "workflows", workflow_name)
+    safe_name = os.path.basename(str(workflow_name or "z_image_turbo.json"))
+    if safe_name != workflow_name or not safe_name.endswith(".json"):
+        raise ValueError("Invalid workflow filename")
+    path = os.path.join(BASE_DIR, "workflows", safe_name)
     if not os.path.exists(path):
         path = WORKFLOW_PATH
     with open(path, "r", encoding="utf-8") as f:
@@ -2195,9 +2210,10 @@ class ComfyUIProviderAdapter(GenerationProviderAdapter):
         workflow_name: str = 'z_image_turbo.json',
     ) -> ComfyUIProviderRuntime:
         workflow_template = load_comfyui_workflow_template(workflow_name)
+        effective_steps = 4 if workflow_name == "flux2_klein_4b_fp8.json" else steps
         session = aiohttp.ClientSession()
         try:
-            target_unet, target_clip, target_vae = await discover_models(session)
+            target_unet, target_clip, target_vae = await discover_models(session, workflow_template)
         except Exception:
             await session.close()
             raise
@@ -2217,7 +2233,7 @@ class ComfyUIProviderAdapter(GenerationProviderAdapter):
                 target_unet=target_unet,
                 target_clip=target_clip,
                 target_vae=target_vae,
-                steps=steps,
+                steps=effective_steps,
                 global_aspect_ratio=global_aspect_ratio,
                 workflow_name=workflow_name,
             ),
@@ -2660,6 +2676,12 @@ def find_positive_negative_nodes(workflow: dict, ksampler_id: str):
     if not ksampler_id: return None, None
     ksampler = workflow.get(ksampler_id, {})
     inputs = ksampler.get("inputs", {})
+    guider_ref = inputs.get("guider")
+    if isinstance(guider_ref, list) and guider_ref:
+        guider = workflow.get(str(guider_ref[0]), {})
+        conditioning_ref = guider.get("inputs", {}).get("conditioning")
+        if isinstance(conditioning_ref, list) and conditioning_ref:
+            return str(conditioning_ref[0]), None
     pos_id = inputs.get("positive", [None])[0]
     neg_id = inputs.get("negative", [None])[0]
     return pos_id, neg_id
@@ -2675,7 +2697,7 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
 
     workflow = json.loads(json.dumps(config.workflow_template))
 
-    node_ksampler = find_node_by_class(workflow, ["KSampler", "SamplerCustom"])
+    node_ksampler = find_node_by_class(workflow, ["KSampler", "SamplerCustom", "SamplerCustomAdvanced"])
     node_unet = find_node_by_class(workflow, ["UNETLoader", "CheckpointLoaderSimple"])
     node_clip = find_node_by_class(workflow, ["CLIPLoader", "DualCLIPLoader"])
     node_vae = find_node_by_class(workflow, ["VAELoader"])
@@ -2683,8 +2705,11 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
     node_pos, node_neg = find_positive_negative_nodes(workflow, node_ksampler)
     node_latent = find_latent_node(workflow, node_ksampler)
 
+    node_scheduler = find_node_by_class(workflow, ["Flux2Scheduler"])
     if node_ksampler and "steps" in workflow[node_ksampler]["inputs"]:
         workflow[node_ksampler]["inputs"]["steps"] = config.steps
+    if node_scheduler and "steps" in workflow[node_scheduler]["inputs"]:
+        workflow[node_scheduler]["inputs"]["steps"] = config.steps
 
     ar_str = str(row.get('aspect_ratio', '')).strip()
     if not ar_str or ar_str.lower() == "nan" or ar_str == "None":
@@ -2711,6 +2736,9 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
     if node_latent and "width" in workflow[node_latent]["inputs"]:
         workflow[node_latent]["inputs"]["width"] = width
         workflow[node_latent]["inputs"]["height"] = height
+    if node_scheduler and "width" in workflow[node_scheduler]["inputs"]:
+        workflow[node_scheduler]["inputs"]["width"] = width
+        workflow[node_scheduler]["inputs"]["height"] = height
 
     raw_positive = f"{prompt_text}, {row.get('extra_positive', '')}, {config.style_prompt}"
     raw_negative = f"{config.negative_prompt}, {row.get('extra_negative', '')}"
@@ -2722,25 +2750,22 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
     if node_neg and "text" in workflow[node_neg]["inputs"]:
         workflow[node_neg]["inputs"]["text"] = final_negative
 
+    try:
+        custom_seed = int(row.get('seed', 0))
+        actual_seed = custom_seed if custom_seed > 0 else uuid.uuid4().int >> 96
+    except (ValueError, TypeError):
+        actual_seed = uuid.uuid4().int >> 96
+
     if node_ksampler and "seed" in workflow[node_ksampler]["inputs"]:
-        try:
-            custom_seed = int(row.get('seed', 0))
-            actual_seed = custom_seed if custom_seed > 0 else uuid.uuid4().int >> 96
-            workflow[node_ksampler]["inputs"]["seed"] = actual_seed
-            row["_actual_seed"] = actual_seed
-        except (ValueError, TypeError):
-            actual_seed = uuid.uuid4().int >> 96
-            workflow[node_ksampler]["inputs"]["seed"] = actual_seed
-            row["_actual_seed"] = actual_seed
+        workflow[node_ksampler]["inputs"]["seed"] = actual_seed
+        row["_actual_seed"] = actual_seed
     elif node_ksampler and "noise_seed" in workflow[node_ksampler]["inputs"]:
-        try:
-            custom_seed = int(row.get('seed', 0))
-            actual_seed = custom_seed if custom_seed > 0 else uuid.uuid4().int >> 96
-            workflow[node_ksampler]["inputs"]["noise_seed"] = actual_seed
-            row["_actual_seed"] = actual_seed
-        except (ValueError, TypeError):
-            actual_seed = uuid.uuid4().int >> 96
-            workflow[node_ksampler]["inputs"]["noise_seed"] = actual_seed
+        workflow[node_ksampler]["inputs"]["noise_seed"] = actual_seed
+        row["_actual_seed"] = actual_seed
+    else:
+        node_noise = find_node_by_class(workflow, ["RandomNoise"])
+        if node_noise and "noise_seed" in workflow[node_noise]["inputs"]:
+            workflow[node_noise]["inputs"]["noise_seed"] = actual_seed
             row["_actual_seed"] = actual_seed
 
 
@@ -2809,7 +2834,7 @@ async def generate_single_image(session, config: GenConfig, prompt_text, desc, t
 
 
 # --- Batch Runner ---
-async def run_kemi_batch(project, selected_prompts, types, style_prompt="", negative_prompt="", global_aspect_ratio="16:9", batch_count=1, steps=20, *, run_id=None, mode="direct", provider_id="comfyui", request_summary=None):
+async def run_kemi_batch(project, selected_prompts, types, style_prompt="", negative_prompt="", global_aspect_ratio="16:9", batch_count=1, steps=20, *, run_id=None, mode="direct", provider_id="comfyui", workflow_name="z_image_turbo.json", request_summary=None):
     reset_batch_status()
     batch_status["run_id"] = run_id
     batch_status["project"] = project
@@ -2841,6 +2866,7 @@ async def run_kemi_batch(project, selected_prompts, types, style_prompt="", nega
                 negative_prompt=negative_prompt,
                 steps=steps,
                 global_aspect_ratio=global_aspect_ratio,
+                workflow_name=workflow_name,
             )
         except Exception as e:
             add_log(f"Provider runtime init failed: {str(e)}", "error")
@@ -2968,6 +2994,7 @@ class StartBatchRequest(BaseModel):
     project: str = "kemi"
     mode: str = "direct"
     provider_id: Optional[str] = None
+    workflow_name: str = "z_image_turbo.json"
     operator_mode: str = "studio"
     template_id: Optional[str] = None
     scene_spec: Optional[SceneSpecPayload] = None
@@ -3221,6 +3248,7 @@ def build_request_summary(req: StartBatchRequest) -> Dict[str, Any]:
         "referenceAssets": summarize_reference_assets(req.reference_assets),
         "outputTypes": output_types,
         "generationParams": {
+            "workflowName": req.workflow_name,
             "aspectRatio": req.global_aspect_ratio,
             "steps": req.steps,
             "batchCount": req.batch_count,
@@ -3236,7 +3264,12 @@ def validate_generation_request(req: StartBatchRequest) -> None:
         load_project_config(req.project)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    resolve_provider_id(req.project, req.provider_id)
+    provider_id = resolve_provider_id(req.project, req.provider_id)
+    if provider_id == "comfyui":
+        try:
+            load_comfyui_workflow_template(req.workflow_name)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid ComfyUI workflow: {exc}")
     validate_generation_numbers(req)
     mode = (req.mode or "direct").strip().lower()
     operator_mode = str(req.operator_mode or "studio").strip().lower() or "studio"
@@ -3648,7 +3681,8 @@ async def start_batch(background_tasks: BackgroundTasks, req: StartBatchRequest)
         background_tasks.add_task(
             run_kemi_batch, req.project, prompts, output_types, req.style_prompt,
             req.negative_prompt, req.global_aspect_ratio, req.batch_count, req.steps,
-            run_id=run_id, mode=request_summary["mode"], provider_id=provider_id, request_summary=request_summary
+            run_id=run_id, mode=request_summary["mode"], provider_id=provider_id,
+            workflow_name=req.workflow_name, request_summary=request_summary
         )
     except Exception:
         restore_idle_batch_status()

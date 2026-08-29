@@ -1,0 +1,14 @@
+{
+  "1": {"inputs":{"unet_name":"flux-2-klein-4b-fp8.safetensors","weight_dtype":"default"},"class_type":"UNETLoader","_meta":{"title":"Load FLUX.2 Klein 4B FP8"}},
+  "2": {"inputs":{"clip_name":"qwen_3_4b.safetensors","type":"flux2","device":"default"},"class_type":"CLIPLoader","_meta":{"title":"Load Qwen3 4B Text Encoder"}},
+  "3": {"inputs":{"vae_name":"flux2-vae.safetensors"},"class_type":"VAELoader","_meta":{"title":"Load FLUX.2 VAE"}},
+  "4": {"inputs":{"text":"{prompt}","clip":["2",0]},"class_type":"CLIPTextEncode","_meta":{"title":"Positive Prompt"}},
+  "5": {"inputs":{"model":["1",0],"conditioning":["4",0]},"class_type":"BasicGuider","_meta":{"title":"Basic Guider"}},
+  "6": {"inputs":{"noise_seed":42},"class_type":"RandomNoise","_meta":{"title":"Random Noise"}},
+  "7": {"inputs":{"sampler_name":"euler"},"class_type":"KSamplerSelect","_meta":{"title":"Euler Sampler"}},
+  "8": {"inputs":{"steps":4,"width":1024,"height":1024},"class_type":"Flux2Scheduler","_meta":{"title":"FLUX.2 4-Step Scheduler"}},
+  "9": {"inputs":{"width":1024,"height":1024,"batch_size":1},"class_type":"EmptyFlux2LatentImage","_meta":{"title":"Empty FLUX.2 Latent"}},
+  "10": {"inputs":{"noise":["6",0],"guider":["5",0],"sampler":["7",0],"sigmas":["8",0],"latent_image":["9",0]},"class_type":"SamplerCustomAdvanced","_meta":{"title":"Sampler Custom Advanced"}},
+  "11": {"inputs":{"samples":["10",0],"vae":["3",0]},"class_type":"VAEDecode","_meta":{"title":"VAE Decode"}},
+  "12": {"inputs":{"filename_prefix":"Flux2Klein4B","images":["11",0]},"class_type":"SaveImage","_meta":{"title":"Save Image"}}
+}

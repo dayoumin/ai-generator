@@ -3376,6 +3376,7 @@ function buildGenerationPayload(selectedPrompts) {
         project: AppState.currentProject,
         mode: generationMode,
         provider_id: getCurrentProviderId(),
+        workflow_name: document.getElementById('workflow-select')?.value || 'z_image_turbo.json',
         operator_mode: getOperatorMode(),
         template_id: AppState.activeSceneTemplateId,
         scene_spec: sceneSpec,
